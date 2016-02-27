@@ -92,17 +92,74 @@ timer_elapsed (int64_t then)
   return timer_ticks () - then;
 }
 
+static bool comp_tick(const struct list_elem *A, const struct list_elem *B, void *aux)
+{
+    const struct thread *threadA = list_entry(A, struct thread, elem);
+    const struct thread *threadB = list_entry(B, struct thread, elem);
+    ASSERT(aux == NULL);
+
+    if(threadA->ticks < threadB->ticks)
+    {
+        return true;
+    }
+    else
+    {
+        return false;
+    }
+}
 /* Suspends execution for approximately TICKS timer ticks. */
 void
 timer_sleep (int64_t ticks) 
 {
+  /* original code
   int64_t start = timer_ticks ();
 
   ASSERT (intr_get_level () == INTR_ON);
   while (timer_elapsed (start) < ticks) 
     thread_yield ();
-}
+  */
 
+  enum intr_level old_level;
+  struct thread *t = thread_current();
+
+  ASSERT(intr_get_level() == INTR_ON);
+
+  /* 
+   * to make INTR_OFF call intr_disable 
+   * set struct thread's tick and then block it
+   * after that insert it into list for remember which thread is blocked
+   * and recover intr level
+   * */
+  old_level = intr_disable();
+  t->ticks = ticks + timer_ticks();
+  list_insert_ordered(&blocked_list, &t->elem, comp_tick, NULL);
+  thread_block();
+
+  intr_set_level(old_level);
+}
+/* wake up blocked thread */
+static void
+thread_wake(void)
+{
+  const struct list_elem *elem;
+  const struct thread *t;
+
+  while(!list_empty(&blocked_list))
+  {
+      elem = list_front(&blocked_list);
+      t = list_entry(elem, struct thread, elem);
+
+      if(ticks >= t->ticks)
+      {
+          list_pop_front(&blocked_list);
+          thread_unblock(t);
+      }
+      else
+      {
+          return;
+      }
+  }
+}
 /* Suspends execution for approximately MS milliseconds. */
 void
 timer_msleep (int64_t ms) 
@@ -137,6 +194,7 @@ timer_interrupt (struct intr_frame *args UNUSED)
 {
   ticks++;
   thread_tick ();
+  thread_wake();
 }
 
 /* Returns true if LOOPS iterations waits for more than one timer
