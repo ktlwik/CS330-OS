@@ -1,2 +1,2 @@
 # CS330
-CS330 Operation System and Lab
+CS330 Operating Systems and Lab
