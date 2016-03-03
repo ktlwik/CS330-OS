@@ -171,6 +171,7 @@ thread_create (const char *name, int priority,
                thread_func *function, void *aux) 
 {
   struct thread *t;
+  struct thread *cur;
   struct kernel_thread_frame *kf;
   struct switch_entry_frame *ef;
   struct switch_threads_frame *sf;
@@ -203,6 +204,12 @@ thread_create (const char *name, int priority,
 
   /* Add to run queue. */
   thread_unblock (t);
+
+  cur = thread_current();
+  if(cur->priority < t->priority)
+  {
+      thread_yield();
+  }
 
   return tid;
 }
@@ -319,7 +326,16 @@ thread_yield (void)
 void
 thread_set_priority (int new_priority) 
 {
-  thread_current ()->priority = new_priority;
+  struct thread *t = thread_current();
+  if(t->priority_before == -1)
+    t->priority = new_priority;
+  else
+  {
+      /* if lock aquired */
+      t->priority_before = new_priority;
+  }
+  thread_yield();
+  
 }
 
 /* Returns the current thread's priority. */
@@ -444,7 +460,10 @@ init_thread (struct thread *t, const char *name, int priority)
   strlcpy (t->name, name, sizeof t->name);
   t->stack = (uint8_t *) t + PGSIZE;
   t->priority = priority;
+  t->priority_before = -1;
   t->magic = THREAD_MAGIC;
+  t->donatee = NULL;
+  list_init(&t->donator);
 }
 
 /* Allocates a SIZE-byte frame at the top of thread T's stack and
@@ -459,7 +478,15 @@ alloc_frame (struct thread *t, size_t size)
   t->stack -= size;
   return t->stack;
 }
+static bool
+comp_priority(const struct list_elem *A, const struct list_elem *B, void *aux)
+{
+    const struct thread *threadA = list_entry(A, struct thread, elem);
+    const struct thread *threadB = list_entry(B, struct thread, elem);
+    ASSERT(aux == NULL);
 
+    return (threadA->priority < threadB->priority)? true:false;
+}
 /* Chooses and returns the next thread to be scheduled.  Should
    return a thread from the run queue, unless the run queue is
    empty.  (If the running thread can continue running, then it
@@ -468,10 +495,17 @@ alloc_frame (struct thread *t, size_t size)
 static struct thread *
 next_thread_to_run (void) 
 {
+  const struct thread *t;
+  struct list_elem *e;
   if (list_empty (&ready_list))
     return idle_thread;
   else
-    return list_entry (list_pop_front (&ready_list), struct thread, elem);
+  {
+      e = list_max(&ready_list, comp_priority, NULL);
+      t = list_entry(e, struct thread, elem);
+      list_remove(e);
+      return t;
+  }
 }
 
 /* Completes a thread switch by activating the new thread's page

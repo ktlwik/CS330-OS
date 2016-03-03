@@ -102,6 +102,10 @@ static bool comp_tick(const struct list_elem *A, const struct list_elem *B, void
     {
         return true;
     }
+    else if(threadA->ticks == threadB->ticks)
+    {
+        return threadA->priority < threadB->priority? true:false;
+    }
     else
     {
         return false;
