@@ -30,7 +30,7 @@ process_execute (const char *file_name)
 {
   char *fn_copy;
   tid_t tid;
-
+  
   /* Make a copy of FILE_NAME.
      Otherwise there's a race between the caller and load(). */
   fn_copy = palloc_get_page (0);
@@ -50,10 +50,11 @@ process_execute (const char *file_name)
 static void
 start_process (void *f_name)
 {
-  char *file_name = f_name;
+  char *file_name = f_name, *saved_ptr;
   struct intr_frame if_;
   bool success;
 
+  file_name = strtok_r(file_name, " ", &saved_ptr);
   /* Initialize interrupt frame and load executable. */
   memset (&if_, 0, sizeof if_);
   if_.gs = if_.fs = if_.es = if_.ds = if_.ss = SEL_UDSEG;
@@ -88,6 +89,7 @@ start_process (void *f_name)
 int
 process_wait (tid_t child_tid UNUSED) 
 {
+  while(1);
   return -1;
 }
 
@@ -200,7 +202,97 @@ static bool validate_segment (const struct Elf32_Phdr *, struct file *);
 static bool load_segment (struct file *file, off_t ofs, uint8_t *upage,
                           uint32_t read_bytes, uint32_t zero_bytes,
                           bool writable);
+static bool
+setup_args(void **esp, const char *file_name)
+{
+    char *name_dup = (char *)file_name;
+    enum {DQUOTE, QUOTE, UNQUOTE} state = UNQUOTE;
+    char *ptr, *endptr;
+    int len;
+    *(name_dup + strlen(name_dup)) = ' ';
+    len = strlen(name_dup);
 
+    hex_dump(0, file_name, 20, true);
+
+
+    /* last byte of string */
+    ptr = name_dup + len + 1;
+    **(uint32_t **)esp = 0;
+    while(ptr -= 1, ptr != name_dup)
+    {
+        if(state == UNQUOTE)
+        {
+            if (*ptr == ' ')
+            {
+                if(*(ptr + 1) == 0) continue;
+                *ptr = 0;
+            }
+            else if(*ptr == '\'')
+            {
+                state = QUOTE;
+                continue;
+            }
+            else if(*ptr == '"')
+            {
+                state = DQUOTE;
+                continue;
+            }
+        }
+        else if(state == QUOTE && *ptr == '\'')
+        {
+            state = UNQUOTE;
+            continue;
+
+        }
+        else if(state == DQUOTE && *ptr =='"')
+        {
+            state = UNQUOTE;
+            continue;
+        }
+        *esp = *esp - 1;
+        **(uint8_t **)esp = *ptr;
+    }
+    *esp = *esp - 1;
+    **(uint8_t **)esp = *ptr;
+    endptr = *esp;
+    ptr = PHYS_BASE - 1;
+    ASSERT(state == UNQUOTE);
+
+    /* word align */
+    while(((uint32_t)(*esp) & 3) != 0)
+    {
+        (*esp) --;
+    }
+
+    /* last argv ptr */
+    len = 0; /* stand for argc */
+    *(uint32_t **)esp -= 1;
+    **(uint32_t **)esp = 0;
+
+    /* pointer for argv[] */
+    while(ptr != endptr)
+    {
+        if(*(ptr - 1) == 0)
+        {
+            *(uint32_t **)esp -= 1;
+            **(uint32_t **)esp = (uint32_t)ptr;
+            len += 1;
+        }
+        ptr -= 1;
+    }
+    *(uint32_t **)esp -= 1;
+    **(uint32_t **)esp = (uint32_t)ptr;
+    len += 1;
+
+    *(uint32_t **)esp -= 3;
+    *(*(uint32_t **)esp + 2) = (uint32_t)(*(uint32_t **)esp + 3);           /* argv */
+    *(*(uint32_t **)(esp) + 1) = len;                                       /* argc */
+    *(*(uint32_t **)(esp) + 0) = 0;                                         /* retaddr */
+    // hex_dump(0, *esp, (int) ((size_t) PHYS_BASE - (size_t) *esp), true); /* test */
+
+    return true;
+
+}
 /* Loads an ELF executable from FILE_NAME into the current thread.
    Stores the executable's entry point into *EIP
    and its initial stack pointer into *ESP.
@@ -220,7 +312,6 @@ load (const char *file_name, void (**eip) (void), void **esp)
   if (t->pagedir == NULL) 
     goto done;
   process_activate ();
-
   /* Open executable file. */
   file = filesys_open (file_name);
   if (file == NULL) 
@@ -304,7 +395,7 @@ load (const char *file_name, void (**eip) (void), void **esp)
   /* Set up stack. */
   if (!setup_stack (esp))
     goto done;
-
+  setup_args(esp, file_name);
   /* Start address. */
   *eip = (void (*) (void)) ehdr.e_entry;
 
