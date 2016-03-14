@@ -1,6 +1,6 @@
 #!/bin/bash
 
-cd $PWD/pintos/src/threads
+cd /pintos/src/threads
 make clean
 make
 cd build
