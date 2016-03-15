@@ -80,6 +80,13 @@ typedef int tid_t;
    only because they are mutually exclusive: only a thread in the
    ready state is on the run queue, whereas only a thread in the
    blocked state is on a semaphore wait list. */
+struct fd_wrap
+{
+    struct file *file;
+    int fd;
+    struct list_elem elem;
+};
+
 struct thread
   {
     /* Owned by thread.c. */
@@ -96,13 +103,15 @@ struct thread
     struct list donator;
 
     struct thread *donatee;
-
     /* timer_sleep */
     int64_t ticks;
 
 #ifdef USERPROG
     /* Owned by userprog/process.c. */
     uint32_t *pagedir;                  /* Page directory. */
+    uint8_t dying_fin;
+    int32_t exit_state;
+    struct list fd_list;
 #endif
 
     /* Owned by thread.c. */
@@ -127,7 +136,7 @@ tid_t thread_create (const char *name, int priority, thread_func *, void *);
 
 void thread_block (void);
 void thread_unblock (struct thread *);
-
+struct thread *get_thread_by_tid(tid_t tid);
 struct thread *thread_current (void);
 tid_t thread_tid (void);
 const char *thread_name (void);

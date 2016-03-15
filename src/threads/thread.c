@@ -74,6 +74,23 @@ static void schedule (void);
 void schedule_tail (struct thread *prev);
 static tid_t allocate_tid (void);
 
+struct thread *
+get_thread_by_tid(tid_t tid)
+{
+  enum intr_level old_level = intr_disable ();
+  struct thread *t = NULL;
+  struct list_elem *e;
+  for(e = list_begin(&ready_list); e != list_end(&ready_list);e = list_next(e))
+  {
+      t = list_entry(e, struct thread , elem);
+      if(t->tid == tid)
+          break;
+  }
+  ASSERT(t != NULL);
+  intr_set_level (old_level);
+  return t;
+
+}
 /* Initializes the threading system by transforming the code
    that's currently running into a thread.  This can't work in
    general and it is possible in this case only because loader.S
@@ -187,6 +204,11 @@ thread_create (const char *name, int priority,
   /* Initialize thread. */
   init_thread (t, name, priority);
   tid = t->tid = allocate_tid ();
+#ifdef USERPROG
+  t->exit_state = -1;
+  t->dying_fin = false;
+  list_init(&t->fd_list);
+#endif
 
   /* Stack frame for kernel_thread(). */
   kf = alloc_frame (t, sizeof *kf);
@@ -291,7 +313,6 @@ void
 thread_exit (void) 
 {
   ASSERT (!intr_context ());
-
 #ifdef USERPROG
   process_exit ();
 #endif
@@ -547,7 +568,7 @@ schedule_tail (struct thread *prev)
      pull out the rug under itself.  (We don't free
      initial_thread because its memory was not obtained via
      palloc().) */
-  if (prev != NULL && prev->status == THREAD_DYING && prev != initial_thread) 
+  if (prev != NULL && prev->status == THREAD_DYING && prev != initial_thread && prev->dying_fin == true) 
     {
       ASSERT (prev != curr);
       palloc_free_page (prev);

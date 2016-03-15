@@ -28,7 +28,7 @@ static bool load (const char *cmdline, void (**eip) (void), void **esp);
 tid_t
 process_execute (const char *file_name) 
 {
-  char *fn_copy;
+  char *fn_copy, *unused;
   tid_t tid;
   
   /* Make a copy of FILE_NAME.
@@ -38,6 +38,7 @@ process_execute (const char *file_name)
     return TID_ERROR;
   strlcpy (fn_copy, file_name, PGSIZE);
 
+  file_name = strtok_r(file_name, " ", &unused);
   /* Create a new thread to execute FILE_NAME. */
   tid = thread_create (file_name, PRI_DEFAULT, start_process, fn_copy);
   if (tid == TID_ERROR)
@@ -50,11 +51,11 @@ process_execute (const char *file_name)
 static void
 start_process (void *f_name)
 {
-  char *file_name = f_name, *saved_ptr;
+  char *file_name = f_name, *unused;
   struct intr_frame if_;
   bool success;
 
-  file_name = strtok_r(file_name, " ", &saved_ptr);
+  file_name = strtok_r(file_name, " ", &unused);
   /* Initialize interrupt frame and load executable. */
   memset (&if_, 0, sizeof if_);
   if_.gs = if_.fs = if_.es = if_.ds = if_.ss = SEL_UDSEG;
@@ -89,7 +90,10 @@ start_process (void *f_name)
 int
 process_wait (tid_t child_tid UNUSED) 
 {
-  while(1);
+  struct thread *t = get_thread_by_tid(child_tid);
+  ASSERT(t->tid == child_tid);
+  while(t->dying_fin == false && t->status != THREAD_DYING);
+  t->dying_fin = true;
   return -1;
 }
 
@@ -102,6 +106,7 @@ process_exit (void)
 
   /* Destroy the current process's page directory and switch back
      to the kernel-only page directory. */
+  printf ("%s: exit(%d)\n", curr->name, curr->exit_state);
   pd = curr->pagedir;
   if (pd != NULL) 
     {
@@ -211,9 +216,6 @@ setup_args(void **esp, const char *file_name)
     int len;
     *(name_dup + strlen(name_dup)) = ' ';
     len = strlen(name_dup);
-
-    hex_dump(0, file_name, 20, true);
-
 
     /* last byte of string */
     ptr = name_dup + len + 1;
