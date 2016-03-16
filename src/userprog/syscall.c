@@ -7,6 +7,9 @@
 #include "threads/malloc.h"
 #include "filesys/file.h"
 #include "filesys/filesys.h"
+#include "threads/synch.h"
+
+typedef int pid_t;
 
 static void syscall_handler (struct intr_frame *);
 static void check_args(void *esp, uint32_t argc);
@@ -14,6 +17,7 @@ static void check_args(void *esp, uint32_t argc);
 void
 syscall_init (void) 
 {
+  lock_init(&filesys_lock);
   intr_register_int (0x30, 3, INTR_ON, syscall_handler, "syscall");
 }
 
@@ -24,13 +28,14 @@ check_args(void *esp, uint32_t argc)
     if((_esp + (argc << 2)) >= 0xc0000000)
         thread_exit();
 }
-
+/* for sys_halt */
 static void 
 _halt()
 {
     power_off();
 }
 
+/* for sys_exit */
 static void
 _exit(void *esp)
 {
@@ -39,13 +44,52 @@ _exit(void *esp)
     t->exit_state = ret;
     thread_exit();
 }
+
+/* for sys_exec */
+static pid_t
+_exec(void *esp)
+{
+    const char *file_name = *(const char **)(esp + 4);
+    char *fn_copy = (char *)malloc(strlen(file_name) + 1);
+    char *unused;
+    bool check_exists = false;
+    lock_acquire(&filesys_lock);
+    strlcpy(fn_copy, file_name, strlen(file_name) + 1);
+    fn_copy = strtok_r(fn_copy, " ", &unused);
+
+    struct dir *dir = dir_open_root ();
+    struct inode *inode = NULL;
+
+    check_exists = (dir != NULL && dir_lookup (dir, fn_copy, &inode));
+    free(fn_copy);
+    dir_close(dir);
+    inode_close (inode);
+    if(check_exists)
+    {
+        return process_execute(file_name);
+    }
+    else
+    {
+        return -1;
+    }
+}
+
+/* for sys_wait */
+static int
+_wait(void *esp)
+{
+    pid_t pid = *(pid_t *)(esp + 4);
+    return process_wait(pid);
+}
+
 /* for sys_create */
 static bool
 _create(void *esp)
 {
     const char *file_name = *(const char **)(esp + 4);
     unsigned initial_size = *(unsigned *)(esp + 8);
-    if(file_name == NULL) return false;
+    if(file_name == NULL) thread_exit();
+    lock_acquire(&filesys_lock);
     return filesys_create(file_name, initial_size);
 }
 /* for sys_remove */
@@ -54,6 +98,7 @@ _remove(void *esp)
 {
     const char *file_name = *(const char **)(esp + 4);
     if(file_name == NULL) return false;
+    lock_acquire(&filesys_lock);
     return filesys_remove(file_name);
 }
 /* fd_utils */
@@ -111,6 +156,7 @@ _open(void *esp)
     {
         thread_exit();
     }
+    lock_acquire(&filesys_lock);
     file = filesys_open(file_name);
     if(file == NULL)
     {
@@ -124,15 +170,6 @@ _open(void *esp)
     return wrapper->fd;
 }
 
-/* for close syscall */
-static void
-destroy_fd_wrapper(struct fd_wrap *wrap)
-{
-    file_close(wrap->file);
-    list_remove(&wrap->elem);
-    free(wrap);
-}
-
 static void
 _close(void *esp)
 {
@@ -140,7 +177,12 @@ _close(void *esp)
     struct fd_wrap *fd_wrapper;
     fd_wrapper = get_fd_wrapper_by_fd(fd);
     if(fd_wrapper)
-        destroy_fd_wrapper(fd_wrapper);
+    {
+        lock_acquire(&filesys_lock);
+        file_close(fd_wrapper->file);
+        list_remove(&fd_wrapper->elem);
+        free(fd_wrapper);
+    }
 }
 
 /* for sys_file_size */
@@ -150,6 +192,7 @@ _file_size(void *esp)
     int32_t fd = *(int32_t *)(esp + 4);
     struct fd_wrap *fd_wrapper;
     fd_wrapper = get_fd_wrapper_by_fd(fd);
+    lock_acquire(&filesys_lock);
     if(fd_wrapper != NULL)
         return file_length(fd_wrapper->file);
     return -1;
@@ -164,7 +207,6 @@ _read(void *esp)
     uint32_t len = *(uint32_t *)(esp + 12);
     uint32_t ret = 0;
     struct fd_wrap *fd_wrapper;
-    struct file *file;
 
     if(fd == 0)
     {
@@ -183,6 +225,7 @@ _read(void *esp)
         fd_wrapper = get_fd_wrapper_by_fd(fd);
         if(fd_wrapper != NULL)
         {
+            lock_acquire(&filesys_lock);
             ret = file_read(fd_wrapper->file, buffer, len);
         }
     }
@@ -212,6 +255,7 @@ _write(void *esp)
         fd_wrapper = get_fd_wrapper_by_fd(fd);
         if(fd_wrapper != NULL)
         {
+            lock_acquire(&filesys_lock);
             ret = file_write(fd_wrapper->file, buffer, len);
         }
     }
@@ -229,6 +273,7 @@ _seek(void *esp)
     fd_wrapper = get_fd_wrapper_by_fd(fd);
     if(fd_wrapper != NULL)
     {
+        lock_acquire(&filesys_lock);
         file_seek(fd_wrapper->file, position);
     }
 }
@@ -242,6 +287,7 @@ _tell(void *esp)
     fd_wrapper = get_fd_wrapper_by_fd(fd);
     if(fd_wrapper != NULL)
     {
+        lock_acquire(&filesys_lock);
         return file_tell(fd_wrapper->file);
     }
     return -1;
@@ -265,9 +311,11 @@ syscall_handler (struct intr_frame *f UNUSED)
         break;
     case SYS_EXEC:
         check_args(f->esp, 2);
+        f->eax = _exec(f->esp);
         break;
     case SYS_WAIT:
         check_args(f->esp, 2);
+        f->eax = _wait(f->esp);
         break;
     case SYS_CREATE:
         check_args(f->esp, 3);
@@ -308,4 +356,7 @@ syscall_handler (struct intr_frame *f UNUSED)
     default:
         PANIC("NOT HANDLED");
   }
+  if(lock_held_by_current_thread(&filesys_lock))
+      lock_release(&filesys_lock);
+  //printf("SYSCALL BY %s : ret: %x\n", thread_current()->name, f->eax);
 }

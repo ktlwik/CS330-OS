@@ -17,6 +17,8 @@
 #include "threads/palloc.h"
 #include "threads/thread.h"
 #include "threads/vaddr.h"
+#include "threads/synch.h"
+#include "userprog/syscall.h"
 
 static thread_func start_process NO_RETURN;
 static bool load (const char *cmdline, void (**eip) (void), void **esp);
@@ -30,22 +32,27 @@ process_execute (const char *file_name)
 {
   char *fn_copy, *unused;
   tid_t tid;
+  struct thread *t = thread_current();
   
   /* Make a copy of FILE_NAME.
      Otherwise there's a race between the caller and load(). */
   fn_copy = palloc_get_page (0);
   if (fn_copy == NULL)
     return TID_ERROR;
+  memset(fn_copy, 0, PGSIZE);
   strlcpy (fn_copy, file_name, PGSIZE);
 
-  file_name = strtok_r(file_name, " ", &unused);
+  fn_copy = strtok_r(fn_copy, " ", &unused);
+  lock_acquire(&process_execute_lock);
+
   /* Create a new thread to execute FILE_NAME. */
-  tid = thread_create (file_name, PRI_DEFAULT, start_process, fn_copy);
+  tid = thread_create (fn_copy, PRI_DEFAULT, start_process, fn_copy);
   if (tid == TID_ERROR)
-    palloc_free_page (fn_copy); 
+    palloc_free_page (fn_copy);
+  lock_release(&process_execute_lock);
   return tid;
 }
-
+struct thread *debug;
 /* A thread function that loads a user process and makes it start
    running. */
 static void
@@ -53,16 +60,16 @@ start_process (void *f_name)
 {
   char *file_name = f_name, *unused;
   struct intr_frame if_;
+  struct thread *t = thread_current();
   bool success;
 
-  file_name = strtok_r(file_name, " ", &unused);
+  if(t->tid == 4) debug = t;
   /* Initialize interrupt frame and load executable. */
   memset (&if_, 0, sizeof if_);
   if_.gs = if_.fs = if_.es = if_.ds = if_.ss = SEL_UDSEG;
   if_.cs = SEL_UCSEG;
   if_.eflags = FLAG_IF | FLAG_MBS;
   success = load (file_name, &if_.eip, &if_.esp);
-
   /* If load failed, quit. */
   palloc_free_page (file_name);
   if (!success) 
@@ -88,13 +95,24 @@ start_process (void *f_name)
    This function will be implemented in problem 2-2.  For now, it
    does nothing. */
 int
-process_wait (tid_t child_tid UNUSED) 
+process_wait (tid_t child_tid) 
 {
   struct thread *t = get_thread_by_tid(child_tid);
+  enum intr_level old_level;
+  int exit_state = 0;
+  if(t == NULL)
+  {
+      return -1;
+  }
   ASSERT(t->tid == child_tid);
-  while(t->dying_fin == false && t->status != THREAD_DYING);
+  if(t->dying_fin == true)
+      return -1;
+  sema_down(&t->wait_sema);
+  exit_state = t->exit_state;
   t->dying_fin = true;
-  return -1;
+  list_remove(&t->child_elem);
+  sema_up(&t->fin_sema);
+  return exit_state;
 }
 
 /* Free the current process's resources. */
@@ -103,10 +121,31 @@ process_exit (void)
 {
   struct thread *curr = thread_current ();
   uint32_t *pd;
+  struct list_elem *e;
+  struct fd_wrap *wrapper;
 
+
+  if(!lock_held_by_current_thread(&filesys_lock))
+      lock_acquire(&filesys_lock);
+
+  while(!list_empty(&curr->fd_list))
+  {
+      wrapper = list_entry(list_pop_front(&curr->fd_list), struct fd_wrap, elem);
+      file_close(wrapper->file);
+      free(wrapper);
+  }
+
+  while(!list_empty(&curr->childs)) list_pop_front(&curr->childs);
+
+  ASSERT(list_size(&curr->fd_list) == 0);
+  ASSERT(list_size(&curr->childs) == 0);
   /* Destroy the current process's page directory and switch back
      to the kernel-only page directory. */
-  printf ("%s: exit(%d)\n", curr->name, curr->exit_state);
+  file_close(curr->own_file);
+  lock_release(&filesys_lock);
+  sema_up(&curr->wait_sema);
+  printf("%s: exit(%d)\n", curr->name, curr->exit_state);
+  sema_down(&curr->fin_sema);
   pd = curr->pagedir;
   if (pd != NULL) 
     {
@@ -121,6 +160,7 @@ process_exit (void)
       pagedir_activate (NULL);
       pagedir_destroy (pd);
     }
+
 }
 
 /* Sets up the CPU for running user code in the current
@@ -254,6 +294,7 @@ setup_args(void **esp, const char *file_name)
         *esp = *esp - 1;
         **(uint8_t **)esp = *ptr;
     }
+
     *esp = *esp - 1;
     **(uint8_t **)esp = *ptr;
     endptr = *esp;
@@ -315,6 +356,7 @@ load (const char *file_name, void (**eip) (void), void **esp)
     goto done;
   process_activate ();
   /* Open executable file. */
+  lock_acquire(&filesys_lock);
   file = filesys_open (file_name);
   if (file == NULL) 
     {
@@ -405,7 +447,9 @@ load (const char *file_name, void (**eip) (void), void **esp)
 
  done:
   /* We arrive here whether the load is successful or not. */
-  file_close (file);
+  t->own_file = file;
+  file_deny_write(file);
+  lock_release(&filesys_lock);
   return success;
 }
 

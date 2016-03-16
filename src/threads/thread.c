@@ -77,17 +77,23 @@ static tid_t allocate_tid (void);
 struct thread *
 get_thread_by_tid(tid_t tid)
 {
-  enum intr_level old_level = intr_disable ();
+  struct thread *curr = thread_current();
   struct thread *t = NULL;
   struct list_elem *e;
-  for(e = list_begin(&ready_list); e != list_end(&ready_list);e = list_next(e))
+  bool x = false;
+  lock_acquire(&process_execute_lock);
+  for(e = list_begin(&curr->childs); e != list_end(&curr->childs);e = list_next(e))
   {
-      t = list_entry(e, struct thread , elem);
+      t = list_entry(e, struct thread , child_elem);
       if(t->tid == tid)
+      {
+          x = true;
           break;
+      }
   }
-  ASSERT(t != NULL);
-  intr_set_level (old_level);
+  if(x == false)
+      t = NULL;
+  lock_release(&process_execute_lock);
   return t;
 
 }
@@ -113,6 +119,9 @@ thread_init (void)
   list_init (&ready_list);
 
   list_init(&blocked_list);
+#ifdef USERPROG
+    lock_init(&process_execute_lock);
+#endif
 
   /* Set up a thread structure for the running thread. */
   initial_thread = running_thread ();
@@ -188,11 +197,12 @@ thread_create (const char *name, int priority,
                thread_func *function, void *aux) 
 {
   struct thread *t;
-  struct thread *cur;
+  struct thread *curr = thread_current();
   struct kernel_thread_frame *kf;
   struct switch_entry_frame *ef;
   struct switch_threads_frame *sf;
   tid_t tid;
+  enum intr_level old_level = intr_disable();
 
   ASSERT (function != NULL);
 
@@ -202,12 +212,14 @@ thread_create (const char *name, int priority,
     return TID_ERROR;
 
   /* Initialize thread. */
-  init_thread (t, name, priority);
+  init_thread(t, name, priority);
   tid = t->tid = allocate_tid ();
 #ifdef USERPROG
   t->exit_state = -1;
   t->dying_fin = false;
   list_init(&t->fd_list);
+  sema_init(&t->wait_sema, 0);
+  sema_init(&t->fin_sema, 0);
 #endif
 
   /* Stack frame for kernel_thread(). */
@@ -226,9 +238,11 @@ thread_create (const char *name, int priority,
 
   /* Add to run queue. */
   thread_unblock (t);
+  list_push_back(&curr->childs, &t->child_elem);
+  ASSERT(t->tid == tid);
+  intr_set_level(old_level);
 
-  cur = thread_current();
-  if(cur->priority < t->priority)
+  if(curr->priority < t->priority)
   {
       thread_yield();
   }
@@ -485,6 +499,7 @@ init_thread (struct thread *t, const char *name, int priority)
   t->magic = THREAD_MAGIC;
   t->donatee = NULL;
   list_init(&t->donator);
+  list_init(&t->childs);
 }
 
 /* Allocates a SIZE-byte frame at the top of thread T's stack and
@@ -568,7 +583,7 @@ schedule_tail (struct thread *prev)
      pull out the rug under itself.  (We don't free
      initial_thread because its memory was not obtained via
      palloc().) */
-  if (prev != NULL && prev->status == THREAD_DYING && prev != initial_thread && prev->dying_fin == true) 
+  if (prev != NULL && prev->status == THREAD_DYING && prev != initial_thread) 
     {
       ASSERT (prev != curr);
       palloc_free_page (prev);

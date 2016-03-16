@@ -1,4 +1,5 @@
 /* This file is derived from source code for the Nachos
+  sema_down(&curr->fin_sema);
    instructional operating system.  The Nachos copyright notice
    is reproduced in full below. */
 
