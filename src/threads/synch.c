@@ -374,14 +374,14 @@ cond_wait (struct condition *cond, struct lock *lock)
 static bool
 comp_priority_cond(const struct list_elem *A, const struct list_elem *B, void *aux)
 {
-    const struct semaphore *semaphoreA = &list_entry(A, struct semaphore_elem, elem)->semaphore;
-    const struct semaphore *semaphoreB = &list_entry(B, struct semaphore_elem, elem)->semaphore;
+    struct semaphore *semaphoreA = &list_entry(A, struct semaphore_elem, elem)->semaphore;
+    struct semaphore *semaphoreB = &list_entry(B, struct semaphore_elem, elem)->semaphore;
     ASSERT(aux == NULL);
     const struct thread *threadA;
     const struct thread *threadB;
 
-    threadA = list_entry(list_max(&semaphoreA->waiters, comp_priority, NULL), struct thread, elem);
-    threadB = list_entry(list_max(&semaphoreB->waiters, comp_priority, NULL), struct thread, elem);
+    threadA = (const struct thread *)list_entry(list_max(&semaphoreA->waiters, comp_priority, NULL), struct thread, elem);
+    threadB = (const struct thread *)list_entry(list_max(&semaphoreB->waiters, comp_priority, NULL), struct thread, elem);
     return threadA->priority < threadB->priority? true:false;
 }
 /* If any threads are waiting on COND (protected by LOCK), then

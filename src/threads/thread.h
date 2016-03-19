@@ -111,13 +111,14 @@ struct thread
 #ifdef USERPROG
     /* Owned by userprog/process.c. */
     uint32_t *pagedir;                  /* Page directory. */
-    uint8_t dying_fin;
+    bool dying_fin;
+    bool load_fail;
     int32_t exit_state;
     struct list fd_list;
     struct list childs;
     struct semaphore wait_sema;
     struct semaphore fin_sema;
-    struct file *own_file;
+    struct file *executable;
     struct list_elem child_elem;
 #endif
 

@@ -73,7 +73,7 @@ static void *alloc_frame (struct thread *, size_t size);
 static void schedule (void);
 void schedule_tail (struct thread *prev);
 static tid_t allocate_tid (void);
-
+#ifdef USERPROG
 struct thread *
 get_thread_by_tid(tid_t tid)
 {
@@ -95,8 +95,8 @@ get_thread_by_tid(tid_t tid)
       t = NULL;
   lock_release(&process_execute_lock);
   return t;
-
 }
+#endif
 /* Initializes the threading system by transforming the code
    that's currently running into a thread.  This can't work in
    general and it is possible in this case only because loader.S
@@ -217,6 +217,7 @@ thread_create (const char *name, int priority,
 #ifdef USERPROG
   t->exit_state = -1;
   t->dying_fin = false;
+  t->load_fail = false;
   list_init(&t->fd_list);
   sema_init(&t->wait_sema, 0);
   sema_init(&t->fin_sema, 0);
@@ -238,7 +239,9 @@ thread_create (const char *name, int priority,
 
   /* Add to run queue. */
   thread_unblock (t);
+#ifdef USERPROG
   list_push_back(&curr->childs, &t->child_elem);
+#endif
   ASSERT(t->tid == tid);
   intr_set_level(old_level);
 
@@ -499,7 +502,9 @@ init_thread (struct thread *t, const char *name, int priority)
   t->magic = THREAD_MAGIC;
   t->donatee = NULL;
   list_init(&t->donator);
+#ifdef USERPROG
   list_init(&t->childs);
+#endif
 }
 
 /* Allocates a SIZE-byte frame at the top of thread T's stack and
@@ -531,7 +536,7 @@ comp_priority(const struct list_elem *A, const struct list_elem *B, void *aux)
 static struct thread *
 next_thread_to_run (void) 
 {
-  const struct thread *t;
+  struct thread *t;
   struct list_elem *e;
   if (list_empty (&ready_list))
     return idle_thread;

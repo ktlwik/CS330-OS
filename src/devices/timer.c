@@ -146,7 +146,7 @@ static void
 thread_wake(void)
 {
   const struct list_elem *elem;
-  const struct thread *t;
+  struct thread *t;
 
   while(!list_empty(&blocked_list))
   {

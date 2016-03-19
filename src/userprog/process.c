@@ -18,6 +18,7 @@
 #include "threads/thread.h"
 #include "threads/vaddr.h"
 #include "threads/synch.h"
+#include "threads/malloc.h"
 #include "userprog/syscall.h"
 
 static thread_func start_process NO_RETURN;
@@ -32,8 +33,10 @@ process_execute (const char *file_name)
 {
   char *fn_copy, *unused;
   tid_t tid;
-  struct thread *t = thread_current();
-  
+  void *arr[3];
+  bool load_fail = false;
+  struct semaphore start_sema;
+ 
   /* Make a copy of FILE_NAME.
      Otherwise there's a race between the caller and load(). */
   fn_copy = palloc_get_page (0);
@@ -43,27 +46,33 @@ process_execute (const char *file_name)
   strlcpy (fn_copy, file_name, PGSIZE);
 
   fn_copy = strtok_r(fn_copy, " ", &unused);
-  lock_acquire(&process_execute_lock);
+  sema_init(&start_sema, 0);
 
   /* Create a new thread to execute FILE_NAME. */
-  tid = thread_create (fn_copy, PRI_DEFAULT, start_process, fn_copy);
+  arr[0] = fn_copy;
+  arr[1] = &start_sema;
+  arr[2] = &load_fail;
+  lock_acquire(&process_execute_lock);
+  tid = thread_create (fn_copy, PRI_DEFAULT, start_process, arr);
+  lock_release(&process_execute_lock);
+  sema_down(&start_sema);
   if (tid == TID_ERROR)
     palloc_free_page (fn_copy);
-  lock_release(&process_execute_lock);
+  if(load_fail == true) tid = TID_ERROR;
   return tid;
 }
-struct thread *debug;
 /* A thread function that loads a user process and makes it start
    running. */
 static void
-start_process (void *f_name)
+start_process (void *args)
 {
-  char *file_name = f_name, *unused;
+  char *file_name = ((char **)args)[0];
   struct intr_frame if_;
   struct thread *t = thread_current();
+  struct semaphore *start_sema = ((struct semaphore **)args)[1];
+  bool *load_fail = ((bool **)args)[2];
   bool success;
 
-  if(t->tid == 4) debug = t;
   /* Initialize interrupt frame and load executable. */
   memset (&if_, 0, sizeof if_);
   if_.gs = if_.fs = if_.es = if_.ds = if_.ss = SEL_UDSEG;
@@ -72,8 +81,15 @@ start_process (void *f_name)
   success = load (file_name, &if_.eip, &if_.esp);
   /* If load failed, quit. */
   palloc_free_page (file_name);
-  if (!success) 
-    thread_exit ();
+  if (!success)
+  {
+      *load_fail = true;
+      list_remove(&t->child_elem);
+      sema_up(start_sema);
+      t->load_fail = true;
+      thread_exit ();
+      NOT_REACHED();
+  }
 
   /* Start the user process by simulating a return from an
      interrupt, implemented by intr_exit (in
@@ -81,6 +97,7 @@ start_process (void *f_name)
      arguments on the stack in the form of a `struct intr_frame',
      we just point the stack pointer (%esp) to our stack frame
      and jump to it. */
+  sema_up(start_sema);
   asm volatile ("movl %0, %%esp; jmp intr_exit" : : "g" (&if_) : "memory");
   NOT_REACHED ();
 }
@@ -98,7 +115,6 @@ int
 process_wait (tid_t child_tid) 
 {
   struct thread *t = get_thread_by_tid(child_tid);
-  enum intr_level old_level;
   int exit_state = 0;
   if(t == NULL)
   {
@@ -121,7 +137,6 @@ process_exit (void)
 {
   struct thread *curr = thread_current ();
   uint32_t *pd;
-  struct list_elem *e;
   struct fd_wrap *wrapper;
 
 
@@ -135,17 +150,22 @@ process_exit (void)
       free(wrapper);
   }
 
-  while(!list_empty(&curr->childs)) list_pop_front(&curr->childs);
+// while(!list_empty(&curr->childs)) list_pop_front(&curr->childs);
 
   ASSERT(list_size(&curr->fd_list) == 0);
   ASSERT(list_size(&curr->childs) == 0);
   /* Destroy the current process's page directory and switch back
      to the kernel-only page directory. */
-  file_close(curr->own_file);
+  if(curr->executable != NULL)
+      file_close(curr->executable);
   lock_release(&filesys_lock);
-  sema_up(&curr->wait_sema);
-  printf("%s: exit(%d)\n", curr->name, curr->exit_state);
-  sema_down(&curr->fin_sema);
+  if(curr->load_fail == false)
+  {
+      sema_up(&curr->wait_sema);
+      printf("%s: exit(%d)\n", curr->name, curr->exit_state);
+      sema_down(&curr->fin_sema);
+  }
+  
   pd = curr->pagedir;
   if (pd != NULL) 
     {
@@ -160,7 +180,7 @@ process_exit (void)
       pagedir_activate (NULL);
       pagedir_destroy (pd);
     }
-
+  sema_up(&curr->wait_sema);
 }
 
 /* Sets up the CPU for running user code in the current
@@ -447,8 +467,11 @@ load (const char *file_name, void (**eip) (void), void **esp)
 
  done:
   /* We arrive here whether the load is successful or not. */
-  t->own_file = file;
-  file_deny_write(file);
+  if(file != NULL)
+  {
+    t->executable = file;
+    file_deny_write(file);
+  }
   lock_release(&filesys_lock);
   return success;
 }
@@ -535,8 +558,8 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
 
       /* Get a page of memory. */
       uint8_t *kpage = palloc_get_page (PAL_USER);
-      if (kpage == NULL)
-        return false;
+      if (kpage == NULL){
+        return false;}
 
       /* Load this page. */
       if (file_read (file, kpage, page_read_bytes) != (int) page_read_bytes)

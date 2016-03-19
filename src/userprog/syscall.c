@@ -8,6 +8,11 @@
 #include "filesys/file.h"
 #include "filesys/filesys.h"
 #include "threads/synch.h"
+#include "lib/string.h"
+#include "filesys/directory.h"
+#include "filesys/inode.h"
+#include "userprog/process.h"
+#include "devices/input.h"
 
 typedef int pid_t;
 
@@ -30,7 +35,7 @@ check_args(void *esp, uint32_t argc)
 }
 /* for sys_halt */
 static void 
-_halt()
+_halt(void)
 {
     power_off();
 }
@@ -50,28 +55,22 @@ static pid_t
 _exec(void *esp)
 {
     const char *file_name = *(const char **)(esp + 4);
-    char *fn_copy = (char *)malloc(strlen(file_name) + 1);
+    char fn_copy[0x100];
+    char *name;
     char *unused;
     bool check_exists = false;
-    lock_acquire(&filesys_lock);
-    strlcpy(fn_copy, file_name, strlen(file_name) + 1);
-    fn_copy = strtok_r(fn_copy, " ", &unused);
+    strlcpy(fn_copy, file_name, 0x100);
+    name = strtok_r(fn_copy, " ", &unused);
 
+    lock_acquire(&filesys_lock);
     struct dir *dir = dir_open_root ();
     struct inode *inode = NULL;
 
     check_exists = (dir != NULL && dir_lookup (dir, fn_copy, &inode));
-    free(fn_copy);
     dir_close(dir);
     inode_close (inode);
-    if(check_exists)
-    {
-        return process_execute(file_name);
-    }
-    else
-    {
-        return -1;
-    }
+    lock_release(&filesys_lock);
+    return check_exists == true ? process_execute(file_name) : -1;
 }
 
 /* for sys_wait */
@@ -129,7 +128,7 @@ get_fd_wrapper_by_fd(int32_t fd)
 
 /* for sys_open */
 static int
-allocate_fd()
+allocate_fd(void)
 {
     struct list *fd_list = &thread_current()->fd_list;
     struct list_elem *e;
@@ -164,6 +163,11 @@ _open(void *esp)
     }
 
     wrapper = (struct fd_wrap *)malloc(sizeof(struct fd_wrap));
+    if(wrapper == NULL)
+    {
+        file_close(file);
+        return -1;
+    }
     wrapper->file = file;
     wrapper->fd = allocate_fd();
     list_insert_ordered(&t->fd_list, &wrapper->elem, fd_sort, NULL);
@@ -175,10 +179,10 @@ _close(void *esp)
 {
     int32_t fd = *(int32_t *)(esp + 4);
     struct fd_wrap *fd_wrapper;
+    lock_acquire(&filesys_lock);
     fd_wrapper = get_fd_wrapper_by_fd(fd);
     if(fd_wrapper)
     {
-        lock_acquire(&filesys_lock);
         file_close(fd_wrapper->file);
         list_remove(&fd_wrapper->elem);
         free(fd_wrapper);
