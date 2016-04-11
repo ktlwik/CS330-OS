@@ -144,9 +144,9 @@ page_fault (struct intr_frame *f)
   /* Turn interrupts back on (they were only off so that we could
      be assured of reading CR2 before it changed). */
   intr_enable ();
-  if(fault_addr >= (uint8_t *)PHYS_BASE)
-      thread_exit();
 #ifdef VM
+  if(fault_addr >= (void *)PHYS_BASE)
+      goto true_fault;
   struct thread *t = thread_current();
   struct hash_iterator iter;
   struct SPT_elem * elem;
@@ -155,49 +155,28 @@ page_fault (struct intr_frame *f)
   while(hash_next(&iter))
   {
       elem = hash_entry(hash_cur(&iter), struct SPT_elem, elem);
-      if(elem->vaddr == ((uint32_t)fault_addr & 0xfffff000) && elem->paddr == NULL)
+      if(elem->vaddr == (void *)((uint32_t)fault_addr & 0xfffff000) && elem->paddr == NULL)
       {
-          if(elem->type == VM_STACK)
-          {
-            elem->paddr = palloc_get_page(PAL_USER | PAL_ZERO);
-            success = vm_install_page(elem, true);
-          }
-          else if(elem->type == VM_SEGMENT)
-          {
-              elem->paddr = palloc_get_page(PAL_USER);
-              struct file *file = ((struct file **)elem->aux)[0];
-              
-              /* load this page */
-              size_t page_read_bytes = ((size_t *)elem->aux)[1];
-              bool writable = (bool)((int32_t *)elem->aux)[2];
-              off_t ofs = (off_t)((off_t *)elem->aux)[3];
-              file_seek(file, ofs);
-              if(file_read(file, elem->paddr, page_read_bytes) != (int) page_read_bytes)
-              {
-                  success = false;
-                  break;
-              }
-              memset(elem->paddr + page_read_bytes, 0, PGSIZE - page_read_bytes);
-
-              success = vm_install_page(elem, writable);
-              free(elem->aux);
-          }
+          lock_acquire(&page_lock);
+          success = vm_install(elem);
+          lock_release(&page_lock);
           break;
       }
   }
-#endif
 
   if(success) return;
-  // stack access
+  // stack growth
   if((f->esp - 32) <= fault_addr)
   {
-      if(!palloc_user_page((uint32_t)fault_addr & 0xfffff000, VM_STACK,  NULL)) thread_exit();
+      if(!palloc_user_page((void *)((uint32_t)fault_addr & 0xfffff000), VM_STACK,  NULL)) thread_exit();
       else return;
   }
+#endif
+true_fault:
   /* Count page faults. */
   page_fault_cnt++;
-  thread_exit();
 
+  thread_exit();
   /* Determine cause. */
   not_present = (f->error_code & PF_P) == 0;
   write = (f->error_code & PF_W) != 0;
@@ -205,12 +184,11 @@ page_fault (struct intr_frame *f)
   /* To implement virtual memory, delete the rest of the function
      body, and replace it with code that brings in the page to
      which fault_addr refers. */
-  printf ("Page fault at %p: %s error %s page in %s context. %x\n",
+  printf ("Page fault at %p: %s error %s page in %s context. %p\n",
           fault_addr,
           not_present ? "not present" : "rights violation",
           write ? "writing" : "reading",
           user ? "user" : "kernel",
           f->eip);
-  thread_exit();
 }
 

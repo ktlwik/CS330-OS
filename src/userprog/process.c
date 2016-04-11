@@ -155,7 +155,6 @@ process_exit (void)
 // while(!list_empty(&curr->childs)) list_pop_front(&curr->childs);
 
   ASSERT(list_size(&curr->fd_list) == 0);
-  ASSERT(list_size(&curr->childs) == 0);
   /* Destroy the current process's page directory and switch back
      to the kernel-only page directory. */
   if(curr->executable != NULL)
