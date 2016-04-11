@@ -20,7 +20,9 @@
 #include "threads/synch.h"
 #include "threads/malloc.h"
 #include "userprog/syscall.h"
-
+#ifdef VM
+#include "vm/page.h"
+#endif
 static thread_func start_process NO_RETURN;
 static bool load (const char *cmdline, void (**eip) (void), void **esp);
 
@@ -351,7 +353,7 @@ setup_args(void **esp, const char *file_name)
     *(*(uint32_t **)esp + 2) = (uint32_t)(*(uint32_t **)esp + 3);           /* argv */
     *(*(uint32_t **)(esp) + 1) = len;                                       /* argc */
     *(*(uint32_t **)(esp) + 0) = 0;                                         /* retaddr */
-    // hex_dump(0, *esp, (int) ((size_t) PHYS_BASE - (size_t) *esp), true); /* test */
+    //hex_dump(0, *esp, (int) ((size_t) PHYS_BASE - (size_t) *esp), true); /* test */
 
     return true;
 
@@ -555,8 +557,8 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
          and zero the final PAGE_ZERO_BYTES bytes. */
       size_t page_read_bytes = read_bytes < PGSIZE ? read_bytes : PGSIZE;
       size_t page_zero_bytes = PGSIZE - page_read_bytes;
-
       /* Get a page of memory. */
+#ifndef VM
       uint8_t *kpage = palloc_get_page (PAL_USER);
       if (kpage == NULL){
         return false;}
@@ -575,7 +577,15 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
           palloc_free_page (kpage);
           return false; 
         }
-
+#else
+      void **args = malloc(sizeof(void *) * 4);
+      args[0] = (void *)file;
+      args[1] = (void *)page_read_bytes;
+      args[2] = (void *)writable;
+      args[3] = (void *)ofs;
+      ofs += page_read_bytes;
+      if(!palloc_user_page(upage, VM_SEGMENT, args)) return false;
+#endif
       /* Advance. */
       read_bytes -= page_read_bytes;
       zero_bytes -= page_zero_bytes;
@@ -589,6 +599,7 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
 static bool
 setup_stack (void **esp) 
 {
+#ifndef VM
   uint8_t *kpage;
   bool success = false;
 
@@ -596,11 +607,15 @@ setup_stack (void **esp)
   if (kpage != NULL) 
     {
       success = install_page (((uint8_t *) PHYS_BASE) - PGSIZE, kpage, true);
-      if (success)
-        *esp = PHYS_BASE;
-      else
+      if (!success)
         palloc_free_page (kpage);
     }
+#else
+  bool success = palloc_user_page(((uint8_t *)PHYS_BASE) - PGSIZE, VM_STACK, NULL);
+#endif
+  if(success)
+    *esp = PHYS_BASE;
+
   return success;
 }
 

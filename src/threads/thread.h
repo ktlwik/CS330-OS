@@ -3,6 +3,7 @@
 
 #include <debug.h>
 #include <list.h>
+#include <hash.h>
 #include <stdint.h>
 #include "threads/synch.h"
 
@@ -121,7 +122,9 @@ struct thread
     struct file *executable;
     struct list_elem child_elem;
 #endif
-
+#ifdef VM
+    struct hash SPT; 
+#endif
     /* Owned by thread.c. */
     unsigned magic;                     /* Detects stack overflow. */
   };
