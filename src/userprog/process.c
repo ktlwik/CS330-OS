@@ -186,7 +186,6 @@ process_exit (void)
  #ifdef VM
   lock_acquire(&page_lock);
   hash_clear(&curr->SPT, destroy_alloc);
-  lock_release(&page_lock);
  #endif
 
  
@@ -204,6 +203,9 @@ process_exit (void)
       pagedir_activate (NULL);
       pagedir_destroy (pd);
     }
+#ifdef VM
+  lock_release(&page_lock);
+#endif
   sema_up(&curr->wait_sema);
 }
 

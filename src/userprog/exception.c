@@ -144,6 +144,11 @@ page_fault (struct intr_frame *f)
   /* Turn interrupts back on (they were only off so that we could
      be assured of reading CR2 before it changed). */
   intr_enable ();
+
+  not_present = (f->error_code & PF_P) == 0;
+  write = (f->error_code & PF_W) != 0;
+  user = (f->error_code & PF_U) != 0;
+
 #ifdef VM
   if(fault_addr >= (void *)PHYS_BASE)
       goto true_fault;
@@ -155,12 +160,19 @@ page_fault (struct intr_frame *f)
   while(hash_next(&iter))
   {
       elem = hash_entry(hash_cur(&iter), struct SPT_elem, elem);
-      if(elem->vaddr == (void *)((uint32_t)fault_addr & 0xfffff000) && elem->paddr == NULL)
+      if(elem->vaddr == (void *)((uint32_t)fault_addr & 0xfffff000))
       {
-          lock_acquire(&page_lock);
-          success = vm_install(elem);
-          lock_release(&page_lock);
-          break;
+          if(elem->paddr == NULL)
+          {
+            lock_acquire(&page_lock);
+            success = vm_install(elem);
+            lock_release(&page_lock);
+            break;
+          }
+          else if(not_present)
+          {
+              return;
+          }
       }
   }
 
@@ -178,9 +190,6 @@ true_fault:
 
   thread_exit();
   /* Determine cause. */
-  not_present = (f->error_code & PF_P) == 0;
-  write = (f->error_code & PF_W) != 0;
-  user = (f->error_code & PF_U) != 0;
   /* To implement virtual memory, delete the rest of the function
      body, and replace it with code that brings in the page to
      which fault_addr refers. */
