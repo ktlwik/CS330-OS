@@ -22,6 +22,8 @@
 #include "userprog/syscall.h"
 #ifdef VM
 #include "vm/page.h"
+#include "vm/frame.h"
+#include <hash.h>
 #endif
 static thread_func start_process NO_RETURN;
 static bool load (const char *cmdline, void (**eip) (void), void **esp);
@@ -133,6 +135,24 @@ process_wait (tid_t child_tid)
   return exit_state;
 }
 
+static void
+destroy_alloc(struct hash_elem *e)
+{
+    struct SPT_elem *elem;
+    elem = hash_entry(e, struct SPT_elem, elem);
+    if(elem->frame_ptr && elem->frame_ptr->swaped == DISK)
+    {
+        bitmap_set_multiple(free_space, elem->frame_ptr->start, 1, false);
+    }
+
+    if(elem->aux) free(elem->aux);
+    if(elem->frame_ptr)
+    {
+        list_remove(&(elem->frame_ptr->elem));
+        free(elem->frame_ptr);
+    }
+    free(elem);
+}
 /* Free the current process's resources. */
 void
 process_exit (void)
@@ -151,9 +171,6 @@ process_exit (void)
       file_close(wrapper->file);
       free(wrapper);
   }
-
-// while(!list_empty(&curr->childs)) list_pop_front(&curr->childs);
-
   ASSERT(list_size(&curr->fd_list) == 0);
   /* Destroy the current process's page directory and switch back
      to the kernel-only page directory. */
@@ -166,7 +183,13 @@ process_exit (void)
       printf("%s: exit(%d)\n", curr->name, curr->exit_state);
       sema_down(&curr->fin_sema);
   }
-  
+ #ifdef VM
+  lock_acquire(&page_lock);
+  hash_clear(&curr->SPT, destroy_alloc);
+  lock_release(&page_lock);
+ #endif
+
+ 
   pd = curr->pagedir;
   if (pd != NULL) 
     {
@@ -578,6 +601,8 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
         }
 #else
       void **args = malloc(sizeof(void *) * 4);
+      if(args == NULL)
+          PANIC("malloc fail\n");
       args[0] = (void *)file;
       args[1] = (void *)page_read_bytes;
       args[2] = (void *)writable;

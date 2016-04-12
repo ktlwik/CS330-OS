@@ -24,7 +24,7 @@ void vm_init()
   lock_init(&swap_lock);
   lock_init(&page_lock);
   swap_disk = disk_get(1,1); // swap disk
-  free_space = bitmap_create(disk_size(swap_disk) * DISK_SECTOR_SIZE / PGSIZE);
+  free_space = bitmap_create(disk_size(swap_disk) >> 3);
 }
 
 unsigned page_hash_func(const struct hash_elem *e, void *aux)
@@ -155,5 +155,8 @@ vm_install(struct SPT_elem *elem)
         }
     }
   }
+  if(!success) printf("install fail\n");
+  ASSERT(pagedir_get_page(elem->frame_ptr->holder->pagedir, elem->vaddr));
+  //printf("install %x to %x of %d\n", elem->vaddr, elem->paddr, elem->frame_ptr->holder->tid);
   return success;
 }

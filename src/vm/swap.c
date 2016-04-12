@@ -6,6 +6,7 @@
 #include "userprog/pagedir.h"
 #include "threads/thread.h"
 #include "threads/palloc.h"
+#include "threads/interrupt.h"
 #include <debug.h>
 
 // get page from swap disk
@@ -30,14 +31,11 @@ swap_in(struct SPT_elem *elem)
           }
           elem->paddr = new_page;
           for(i = 0; i < 8; i++)
-              disk_read(swap_disk, felem->start + i, elem->paddr + DISK_SECTOR_SIZE * i);
+              disk_read(swap_disk, (felem->start << 3) + i, elem->paddr + DISK_SECTOR_SIZE * i);
           writable = (elem->type == VM_SEGMENT) ? (bool)((int32_t *)elem->aux)[2] : true;
-          lock_acquire(&swap_lock);
-          bitmap_set_multiple(free_space, (felem->start >> 3), 1, false);
-          lock_release(&swap_lock);
+          bitmap_set_multiple(free_space, felem->start, 1, false);
           list_remove(&felem->elem);
           return vm_install_page(elem, writable);
-
       }
   }
   return false;
@@ -48,23 +46,27 @@ bool
 swap_out(struct SPT_elem *elem)
 {
   ASSERT(!list_empty(&FT));
+  
   struct list_elem *e = list_pop_front(&FT);
   struct FRAME_elem *felem = list_entry(e, struct FRAME_elem, elem);
+
   size_t swap_idx;
   int i;
-  lock_acquire(&swap_lock);
+
+  //printf("swap out: %d's %x %x\n", felem->holder->tid, felem->SPT_ptr->vaddr, felem->SPT_ptr->paddr);
+  ASSERT(felem->swaped == MEMORY);
+  pagedir_clear_page(felem->holder->pagedir, felem->SPT_ptr->vaddr);
+  
   swap_idx = bitmap_scan_and_flip(free_space, 0, 1, false);
-  lock_release(&swap_lock);
   if(swap_idx == BITMAP_ERROR) PANIC("KERNEL PANIC DUE TO FULL SWAP DISK");
 
   felem->swaped = DISK;
-  felem->start = (swap_idx) << 3;
+  felem->start = swap_idx;
   void *paddr = felem->SPT_ptr->paddr;
   for(i = 0; i < 8; i++)
-      disk_write(swap_disk, felem->start + i, paddr + DISK_SECTOR_SIZE * i);
+      disk_write(swap_disk, (felem->start << 3) + i, paddr + DISK_SECTOR_SIZE * i);
   
   // free page
-  pagedir_clear_page(thread_current()->pagedir, felem->SPT_ptr->vaddr);
   felem->SPT_ptr->paddr = NULL;
   palloc_free_page(paddr);
   list_push_front(&swap_list, &felem->elem);

@@ -184,11 +184,13 @@ true_fault:
   /* To implement virtual memory, delete the rest of the function
      body, and replace it with code that brings in the page to
      which fault_addr refers. */
-  printf ("Page fault at %p: %s error %s page in %s context. %p\n",
+  printf ("%d's Page fault at %p: %s error %s page in %s context. %p\n",
+          thread_current()->tid,
           fault_addr,
           not_present ? "not present" : "rights violation",
           write ? "writing" : "reading",
           user ? "user" : "kernel",
           f->eip);
+  thread_exit();
 }
 
