@@ -21,7 +21,6 @@ void vm_init()
 {
   list_init(&FT);
   list_init(&swap_list);
-  lock_init(&swap_lock);
   lock_init(&page_lock);
   swap_disk = disk_get(1,1); // swap disk
   free_space = bitmap_create(disk_size(swap_disk) >> 3);
@@ -53,12 +52,19 @@ bool palloc_user_page(void *upage, vm_type type, void *aux)
       success = true;
       SPT_elem->vaddr = upage;
       SPT_elem->type = type;
-      SPT_elem->aux = aux;
+      if(type == VM_MMAP)
+      {
+        *(((struct SPT_elem ***)aux)[0]) = SPT_elem;
+        SPT_elem->aux = (((void ***)aux)[1]);
+      }
+      else
+        SPT_elem->aux = aux;
       SPT_elem->paddr = NULL;
       SPT_elem->frame_ptr = NULL;
 
       hash_insert(&t->SPT, &SPT_elem->elem);
     }
+    //printf(" alloc user page: %x elem: %x aux: %x\n", &t->SPT, SPT_elem, SPT_elem->aux);
     intr_set_level(old_level);
     return success;
 }
@@ -110,6 +116,33 @@ vm_install_segment(struct SPT_elem *elem)
     return success;
 }
 
+static bool
+vm_install_mmap(struct SPT_elem *elem)
+{
+    bool success = false;
+    ASSERT(elem->type == VM_MMAP);
+    elem->paddr = palloc_get_page(PAL_USER);
+    if(elem->paddr == NULL)
+    {
+        return swap_out(elem);
+    }
+    struct file *file = ((struct file **)elem->aux)[0];
+    size_t page_read_bytes = ((size_t *)elem->aux)[1];
+    off_t ofs = (off_t)((off_t *)elem->aux)[2];
+    file_seek(file, ofs);
+    if(file_read(file, elem->paddr, page_read_bytes) != (int) page_read_bytes)
+    {
+        success = false;
+    }
+    else
+    {
+        memset(elem->paddr + page_read_bytes, 0, PGSIZE - page_read_bytes);
+;
+        success = vm_install_page(elem, true);
+    }
+    return success;
+}
+
 bool
 vm_install(struct SPT_elem *elem)
 {
@@ -125,6 +158,10 @@ vm_install(struct SPT_elem *elem)
     else if(elem->type == VM_SEGMENT)
     {
         success = vm_install_segment(elem);
+    }
+    else if(elem->type == VM_MMAP)
+    {
+        success = vm_install_mmap(elem);
     }
 
     // double insertion due to recursion.
@@ -155,7 +192,6 @@ vm_install(struct SPT_elem *elem)
         }
     }
   }
-  if(!success) printf("install fail\n");
   ASSERT(pagedir_get_page(elem->frame_ptr->holder->pagedir, elem->vaddr));
   //printf("install %x to %x of %d\n", elem->vaddr, elem->paddr, elem->frame_ptr->holder->tid);
   return success;

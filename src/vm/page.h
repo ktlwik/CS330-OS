@@ -3,7 +3,7 @@
 #include <hash.h>
 #include "vm/swap.h"
 
-typedef enum {VM_STACK, VM_SEGMENT} vm_type;
+typedef enum {VM_STACK, VM_SEGMENT, VM_MMAP} vm_type;
 struct SPT_elem
 {
   void *vaddr;
@@ -12,6 +12,7 @@ struct SPT_elem
   void *paddr;
   struct hash_elem elem;
   struct FRAME_elem *frame_ptr;
+  struct list_elem mmap_elem;
 };
 
 struct lock page_lock;

@@ -123,7 +123,8 @@ struct thread
     struct list_elem child_elem;
 #endif
 #ifdef VM
-    struct hash SPT; 
+    struct hash SPT;
+    struct list mmap_list;
 #endif
     /* Owned by thread.c. */
     unsigned magic;                     /* Detects stack overflow. */

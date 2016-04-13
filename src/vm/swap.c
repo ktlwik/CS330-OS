@@ -55,6 +55,8 @@ swap_out(struct SPT_elem *elem)
 
   //printf("swap out: %d's %x %x\n", felem->holder->tid, felem->SPT_ptr->vaddr, felem->SPT_ptr->paddr);
   ASSERT(felem->swaped == MEMORY);
+  // if mmaped, rewrite to it
+  write_back(felem->SPT_ptr);
   pagedir_clear_page(felem->holder->pagedir, felem->SPT_ptr->vaddr);
   
   swap_idx = bitmap_scan_and_flip(free_space, 0, 1, false);

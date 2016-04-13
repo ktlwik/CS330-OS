@@ -140,18 +140,7 @@ destroy_alloc(struct hash_elem *e)
 {
     struct SPT_elem *elem;
     elem = hash_entry(e, struct SPT_elem, elem);
-    if(elem->frame_ptr && elem->frame_ptr->swaped == DISK)
-    {
-        bitmap_set_multiple(free_space, elem->frame_ptr->start, 1, false);
-    }
-
-    if(elem->aux) free(elem->aux);
-    if(elem->frame_ptr)
-    {
-        list_remove(&(elem->frame_ptr->elem));
-        free(elem->frame_ptr);
-    }
-    free(elem);
+    frame_destroy(elem);
 }
 /* Free the current process's resources. */
 void
@@ -160,7 +149,7 @@ process_exit (void)
   struct thread *curr = thread_current ();
   uint32_t *pd;
   struct fd_wrap *wrapper;
-
+  struct mmap_wrap *mwrapper;
 
   if(!lock_held_by_current_thread(&filesys_lock))
       lock_acquire(&filesys_lock);
@@ -171,23 +160,39 @@ process_exit (void)
       file_close(wrapper->file);
       free(wrapper);
   }
+
+  while(!list_empty(&curr->mmap_list))
+  {
+      mwrapper = list_entry(list_pop_front(&curr->mmap_list), struct mmap_wrap, elem);
+      free(mwrapper);
+  }
+
   ASSERT(list_size(&curr->fd_list) == 0);
   /* Destroy the current process's page directory and switch back
      to the kernel-only page directory. */
+
   if(curr->executable != NULL)
+  {
       file_close(curr->executable);
+  }
   lock_release(&filesys_lock);
+  if(!lock_held_by_current_thread(&page_lock))
+    lock_acquire(&page_lock);
+  struct hash_iterator iter;
+  while(!hash_empty(&curr->SPT))
+  {
+      hash_first(&iter, &curr->SPT);
+      if(hash_next(&iter))
+        destroy_alloc(hash_cur(&iter));
+  }
+  lock_release(&page_lock);
+
   if(curr->load_fail == false)
   {
       sema_up(&curr->wait_sema);
       printf("%s: exit(%d)\n", curr->name, curr->exit_state);
       sema_down(&curr->fin_sema);
   }
- #ifdef VM
-  lock_acquire(&page_lock);
-  hash_clear(&curr->SPT, destroy_alloc);
- #endif
-
  
   pd = curr->pagedir;
   if (pd != NULL) 
@@ -203,10 +208,6 @@ process_exit (void)
       pagedir_activate (NULL);
       pagedir_destroy (pd);
     }
-#ifdef VM
-  lock_release(&page_lock);
-#endif
-  sema_up(&curr->wait_sema);
 }
 
 /* Sets up the CPU for running user code in the current
@@ -644,7 +645,6 @@ setup_stack (void **esp)
 
   return success;
 }
-
 /* Adds a mapping from user virtual address UPAGE to kernel
    virtual address KPAGE to the page table.
    If WRITABLE is true, the user process may modify the page;
@@ -654,6 +654,7 @@ setup_stack (void **esp)
    with palloc_get_page().
    Returns true on success, false if UPAGE is already mapped or
    if memory allocation fails. */
+#ifndef VM
 static bool
 install_page (void *upage, void *kpage, bool writable)
 {
@@ -664,3 +665,4 @@ install_page (void *upage, void *kpage, bool writable)
   return (pagedir_get_page (t->pagedir, upage) == NULL
           && pagedir_set_page (t->pagedir, upage, kpage, writable));
 }
+#endif

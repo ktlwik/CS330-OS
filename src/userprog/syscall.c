@@ -13,7 +13,13 @@
 #include "filesys/inode.h"
 #include "userprog/process.h"
 #include "devices/input.h"
-
+#ifdef VM
+#include "vm/page.h"
+#include "vm/frame.h"
+#include "vm/swap.h"
+#include "threads/vaddr.h"
+#include "userprog/pagedir.h"
+#endif
 typedef int pid_t;
 
 static void syscall_handler (struct intr_frame *);
@@ -78,6 +84,7 @@ static int
 _wait(void *esp)
 {
     pid_t pid = *(pid_t *)(esp + 4);
+
     return process_wait(pid);
 }
 
@@ -100,6 +107,7 @@ _remove(void *esp)
     lock_acquire(&filesys_lock);
     return filesys_remove(file_name);
 }
+
 /* fd_utils */
 static bool
 fd_sort(const struct list_elem *A, const struct list_elem *B, void *aux)
@@ -142,8 +150,8 @@ allocate_fd(void)
         __fd++;
     }
     return __fd;
-
 }
+
 static int
 _open(void *esp)
 {
@@ -296,11 +304,155 @@ _tell(void *esp)
     }
     return -1;
 }
+#ifdef VM
 
+/* fd_utils */
+static bool
+mapid_sort(const struct list_elem *A, const struct list_elem *B, void *aux)
+{
+    const struct mmap_wrap *mmapA = list_entry(A, struct mmap_wrap, elem);
+    const struct mmap_wrap *mmapB = list_entry(B, struct mmap_wrap, elem);
+    ASSERT(aux == NULL);
+
+    return(mmapA->mapid < mmapB->mapid)? true:false;
+}
+
+static struct mmap_wrap *
+get_map_wrapper_by_mapid(Mapid_t mapid)
+{
+    struct list *mmap_list = &thread_current()->mmap_list;
+    struct list_elem *e;
+    struct mmap_wrap *wrapper;
+    for(e = list_begin(mmap_list); e != list_end(mmap_list); e = list_next(e))
+    {
+        wrapper = list_entry(e, struct mmap_wrap, elem);
+        if(wrapper->mapid == mapid)
+            return wrapper;
+    }
+    return NULL;
+}
+
+/* for sys_open */
+static Mapid_t
+allocate_mapid(void)
+{
+    struct list *mmap_list = &thread_current()->mmap_list;
+    struct list_elem *e;
+    struct mmap_wrap *wrapper;
+    uint32_t __mapid = 1;
+    for(e = list_begin(mmap_list); e != list_end(mmap_list); e = list_next(e))
+    {
+        wrapper = list_entry(e, struct mmap_wrap, elem);
+        if(wrapper->mapid != __mapid)
+            break;
+        __mapid++;
+    }
+    return __mapid;
+}
+
+
+static Mapid_t 
+_mmap(void *esp)
+{
+    int32_t fd = *(int32_t *)(esp + 4);
+    void *addr = *(void **)(esp + 8);
+    struct thread *t = thread_current();
+    struct fd_wrap *fd_wrapper = NULL;
+    struct mmap_wrap *mmap_wrapper = NULL;
+    struct SPT_elem *elem;
+    lock_acquire(&page_lock);
+    Mapid_t mapid = 1;
+    if(fd == 0 || fd == 1 || ((uint32_t)addr & 0xfff) || addr == NULL || pagedir_get_page(thread_current()->pagedir, addr) != NULL)
+        mapid = -1;
+    else
+    {
+      fd_wrapper = get_fd_wrapper_by_fd(fd);
+      if(fd_wrapper == NULL)
+      {
+          mapid = -1;
+      }
+      struct hash_iterator iter;
+      hash_first(&iter, &t->SPT);
+      while(hash_next(&iter))
+      {
+          elem = hash_entry(hash_cur(&iter), struct SPT_elem, elem);
+          if(elem->vaddr == addr)
+          {
+              mapid = -1;
+              break;
+          }
+      }
+
+      uint32_t read_bytes = file_length(fd_wrapper->file);
+      if(read_bytes == 0)
+        mapid = -1;
+
+      if(mapid != (uint32_t)-1)
+      {
+          mmap_wrapper = (struct mmap_wrap *)malloc(sizeof(struct mmap_wrap));
+          if(mmap_wrapper == NULL)
+          {
+              mapid = -1;
+          }
+          else
+          {
+            mmap_wrapper->mapid = allocate_mapid();
+            mmap_wrapper->addr = addr;
+            list_init(&mmap_wrapper->SPTE_list);
+            struct SPT_elem *alloc;
+
+            void *_aux[2];
+            void **args;
+            off_t ofs = 0;
+            while(read_bytes > 0)
+            {
+              alloc = NULL;
+              _aux[0] = &alloc;
+              args = malloc(sizeof(void *) * 3);
+              _aux[1] = args;
+              args[0] = file_reopen(fd_wrapper->file);
+              args[1] = (void *)((read_bytes > PGSIZE) ? PGSIZE : read_bytes);
+              args[2] = (void *)ofs;
+              palloc_user_page(addr, VM_MMAP, _aux);
+              list_push_back(&mmap_wrapper->SPTE_list, &alloc->mmap_elem);
+              if(read_bytes < PGSIZE) break;
+              ofs += PGSIZE;
+              read_bytes -= PGSIZE;
+              addr += PGSIZE;
+            }
+            mapid = mmap_wrapper->mapid;
+            list_insert_ordered(&t->mmap_list, &mmap_wrapper->elem, mapid_sort, NULL);
+          }
+      }
+    }
+    lock_release(&page_lock);
+    return mapid;
+}
+
+static void
+_unmap(void *esp)
+{
+    Mapid_t mapping = *(Mapid_t *)(esp + 4);
+    struct mmap_wrap *mmap_wrapper = get_map_wrapper_by_mapid(mapping);
+    struct SPT_elem *elem;
+
+    if(mmap_wrapper)
+    {
+        while(!list_empty(&mmap_wrapper->SPTE_list))
+        {
+            elem = list_entry(list_pop_front(&mmap_wrapper->SPTE_list), struct SPT_elem, mmap_elem);
+            ASSERT(elem->frame_ptr->holder == thread_current());
+            frame_destroy(elem);
+        }
+        list_remove(&mmap_wrapper->elem);
+        free(mmap_wrapper);
+    }
+}
+#endif
 static void
 syscall_handler (struct intr_frame *f UNUSED) 
 {
-  uint32_t sysnum; 
+  uint32_t sysnum;
 
   sysnum = *(uint32_t *)f->esp;
   switch(sysnum)
@@ -357,6 +509,16 @@ syscall_handler (struct intr_frame *f UNUSED)
         check_args(f->esp, 2);
         _close(f->esp);
         break;
+#ifdef VM
+    case SYS_MMAP:
+        check_args(f->esp, 3);
+        f->eax = _mmap(f->esp);
+        break;
+    case SYS_MUNMAP:
+        check_args(f->esp, 2);
+        _unmap(f->esp);
+        break;
+#endif
     default:
         PANIC("NOT HANDLED");
   }
