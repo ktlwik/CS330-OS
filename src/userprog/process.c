@@ -134,7 +134,7 @@ process_wait (tid_t child_tid)
   sema_up(&t->fin_sema);
   return exit_state;
 }
-
+#ifdef VM
 static void
 destroy_alloc(struct hash_elem *e)
 {
@@ -142,6 +142,7 @@ destroy_alloc(struct hash_elem *e)
     elem = hash_entry(e, struct SPT_elem, elem);
     frame_destroy(elem);
 }
+#endif
 /* Free the current process's resources. */
 void
 process_exit (void)
@@ -160,13 +161,14 @@ process_exit (void)
       file_close(wrapper->file);
       free(wrapper);
   }
-
+#ifdef VM
   while(!list_empty(&curr->mmap_list))
   {
       mwrapper = list_entry(list_pop_front(&curr->mmap_list), struct mmap_wrap, elem);
       free(mwrapper);
   }
-
+  ASSERT(list_size(&curr->mmap_list) == 0)
+#endif
   ASSERT(list_size(&curr->fd_list) == 0);
   /* Destroy the current process's page directory and switch back
      to the kernel-only page directory. */
@@ -176,6 +178,8 @@ process_exit (void)
       file_close(curr->executable);
   }
   lock_release(&filesys_lock);
+
+#ifdef VM
   if(!lock_held_by_current_thread(&page_lock))
     lock_acquire(&page_lock);
   struct hash_iterator iter;
@@ -186,6 +190,7 @@ process_exit (void)
         destroy_alloc(hash_cur(&iter));
   }
   lock_release(&page_lock);
+#endif
 
   if(curr->load_fail == false)
   {
