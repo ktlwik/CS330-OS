@@ -29,5 +29,4 @@ struct list swap_list;
 
 void frame_destroy(struct SPT_elem *);
 void write_back(struct SPT_elem *);
-void hash_write_back_all(struct hash_elem *);
 #endif /* vm/frame.h */
