@@ -11,6 +11,7 @@
 #include "filesys/file.h"
 #include "threads/vaddr.h"
 #endif
+#include "filesys/inode.h"
 /* Number of page faults processed. */
 static long long page_fault_cnt;
 
@@ -178,7 +179,8 @@ page_fault (struct intr_frame *f)
 
   if(success) return;
   // stack growth
-  if((f->esp - 32) <= fault_addr)
+  void *esp = (f->esp < PHYS_BASE || thread_current()->is_syscall == false) ? f->esp : thread_current()->syscall_esp;
+  if((esp - 32) <= fault_addr)
   {
       if(!palloc_user_page((void *)((uint32_t)fault_addr & 0xfffff000), VM_STACK,  NULL)) thread_exit();
       else return;

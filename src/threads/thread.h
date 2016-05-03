@@ -126,6 +126,8 @@ struct thread
     struct hash SPT;
     struct list mmap_list;
 #endif
+    void *syscall_esp;
+    bool is_syscall;
     /* Owned by thread.c. */
     unsigned magic;                     /* Detects stack overflow. */
   };

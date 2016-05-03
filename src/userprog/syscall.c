@@ -455,6 +455,8 @@ syscall_handler (struct intr_frame *f UNUSED)
   uint32_t sysnum;
 
   sysnum = *(uint32_t *)f->esp;
+  thread_current()->syscall_esp = f->esp;
+  thread_current()->is_syscall = true;
   switch(sysnum)
   {
     case SYS_HALT:
@@ -519,10 +521,18 @@ syscall_handler (struct intr_frame *f UNUSED)
         _unmap(f->esp);
         break;
 #endif
+#ifdef EFILESYS
+    case SYS_CHDIR:
+    case SYS_MKDIR:
+    case SYS_READDIR:
+    case SYS_ISDIR:
+    case SYS_INUMBER:
+#endif
     default:
         PANIC("NOT HANDLED");
   }
   if(lock_held_by_current_thread(&filesys_lock))
       lock_release(&filesys_lock);
+  thread_current()->is_syscall = false;
   //printf("SYSCALL BY %s : ret: %x\n", thread_current()->name, f->eax);
 }

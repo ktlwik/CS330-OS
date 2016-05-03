@@ -36,6 +36,9 @@ filesys_init (bool format)
 void
 filesys_done (void) 
 {
+#ifdef CFILESYS
+    disk_cache_WB_all();
+#endif
   free_map_close ();
 }
 

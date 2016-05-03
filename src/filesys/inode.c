@@ -6,7 +6,7 @@
 #include "filesys/filesys.h"
 #include "filesys/free-map.h"
 #include "threads/malloc.h"
-
+#include "threads/synch.h"
 /* Identifies an inode. */
 #define INODE_MAGIC 0x494e4f44
 
@@ -27,6 +27,24 @@ bytes_to_sectors (off_t size)
 {
   return DIV_ROUND_UP (size, DISK_SECTOR_SIZE);
 }
+
+#ifdef CFILESYS
+/* In-memory inode cache. */
+struct lock cache_lock;
+struct disk_cache
+{
+    struct list_elem elem;
+    bool is_dirty;
+    struct disk *disk;
+    disk_sector_t no;
+    char buffer[DISK_SECTOR_SIZE];
+};
+
+static void disk_read_with_cache(struct disk *, disk_sector_t, void *, off_t, size_t);
+static void disk_write_with_cache(struct disk *, disk_sector_t, void *, off_t, size_t);
+
+struct list disk_cache_list;
+#endif
 
 /* In-memory inode. */
 struct inode 
@@ -62,6 +80,10 @@ void
 inode_init (void) 
 {
   list_init (&open_inodes);
+#ifdef CFILESYS
+  list_init(&disk_cache_list);
+  lock_init(&cache_lock);
+#endif
 }
 
 /* Initializes an inode with LENGTH bytes of data and
@@ -137,7 +159,11 @@ inode_open (disk_sector_t sector)
   inode->open_cnt = 1;
   inode->deny_write_cnt = 0;
   inode->removed = false;
+#ifndef CFILESYS
   disk_read (filesys_disk, inode->sector, &inode->data);
+#else
+  disk_read_with_cache (filesys_disk, inode->sector, &inode->data, 0, DISK_SECTOR_SIZE);
+#endif
   return inode;
 }
 
@@ -202,8 +228,9 @@ inode_read_at (struct inode *inode, void *buffer_, off_t size, off_t offset)
 {
   uint8_t *buffer = buffer_;
   off_t bytes_read = 0;
+#ifndef CFILESYS
   uint8_t *bounce = NULL;
-
+#endif
   while (size > 0) 
     {
       /* Disk sector to read, starting byte offset within sector. */
@@ -219,7 +246,7 @@ inode_read_at (struct inode *inode, void *buffer_, off_t size, off_t offset)
       int chunk_size = size < min_left ? size : min_left;
       if (chunk_size <= 0)
         break;
-
+#ifndef CFILESYS
       if (sector_ofs == 0 && chunk_size == DISK_SECTOR_SIZE) 
         {
           /* Read full sector directly into caller's buffer. */
@@ -235,16 +262,21 @@ inode_read_at (struct inode *inode, void *buffer_, off_t size, off_t offset)
               if (bounce == NULL)
                 break;
             }
+
           disk_read (filesys_disk, sector_idx, bounce);
           memcpy (buffer + bytes_read, bounce + sector_ofs, chunk_size);
         }
-      
+#else
+      disk_read_with_cache(filesys_disk, sector_idx, buffer + bytes_read, sector_ofs, chunk_size);
+#endif
       /* Advance. */
       size -= chunk_size;
       offset += chunk_size;
       bytes_read += chunk_size;
     }
+#ifndef CFILESYS
   free (bounce);
+#endif
 
   return bytes_read;
 }
@@ -260,8 +292,9 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size,
 {
   const uint8_t *buffer = buffer_;
   off_t bytes_written = 0;
+#ifndef CFILESYS
   uint8_t *bounce = NULL;
-
+#endif
   if (inode->deny_write_cnt)
     return 0;
 
@@ -280,7 +313,7 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size,
       int chunk_size = size < min_left ? size : min_left;
       if (chunk_size <= 0)
         break;
-
+#ifndef CFILESYS
       if (sector_ofs == 0 && chunk_size == DISK_SECTOR_SIZE) 
         {
           /* Write full sector directly to disk. */
@@ -306,13 +339,17 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size,
           memcpy (bounce + sector_ofs, buffer + bytes_written, chunk_size);
           disk_write (filesys_disk, sector_idx, bounce); 
         }
-
+#else
+      disk_write_with_cache(filesys_disk, sector_idx, (void *)(buffer + bytes_written), sector_ofs, chunk_size);
+#endif
       /* Advance. */
       size -= chunk_size;
       offset += chunk_size;
       bytes_written += chunk_size;
     }
+#ifndef CFILESYS
   free (bounce);
+#endif
 
   return bytes_written;
 }
@@ -343,3 +380,87 @@ inode_length (const struct inode *inode)
 {
   return inode->data.length;
 }
+
+#ifdef CFILESYS
+
+
+static void
+disk_cache_WB(struct disk_cache *cache)
+{
+    if(cache->is_dirty == true)
+    {
+        disk_write(cache->disk, cache->no, cache->buffer);
+    }
+}
+
+void 
+disk_cache_WB_all()
+{
+    struct disk_cache *disk;
+    while(!list_empty(&disk_cache_list))
+    {
+        disk = list_entry(list_pop_front(&disk_cache_list), struct disk_cache, elem);
+        disk_cache_WB(disk);
+        free(disk);
+    }
+}
+
+static struct disk_cache *
+lookup_disk_cache(struct disk * disk, disk_sector_t no)
+{
+    lock_acquire(&cache_lock);
+    struct list_elem *elem;
+    struct disk_cache *cache = NULL;
+    // cache HIT
+    for(elem = list_begin(&disk_cache_list); elem != list_end(&disk_cache_list); elem = list_next(elem))
+    {
+        cache = list_entry(elem, struct disk_cache, elem);
+        if(cache->disk == disk && cache->no == no)
+        {
+            lock_release(&cache_lock);
+            return cache;
+        }
+    }
+
+    // EVICT
+    if(list_size(&disk_cache_list) >= 64)
+    {
+        disk_cache_WB(list_entry(list_pop_back(&disk_cache_list), struct disk_cache, elem));
+        free(cache);
+    }
+
+    // LOAD TO DISK
+    cache = malloc(sizeof(struct disk_cache));
+    if(cache != NULL)
+    {
+        cache->disk = disk;
+        cache->no = no;
+        cache->is_dirty = false;
+        disk_read(cache->disk, cache->no, cache->buffer);
+        list_push_front(&disk_cache_list, &cache->elem);
+    }
+    lock_release(&cache_lock);
+    return cache;
+
+
+}
+
+static void
+disk_read_with_cache(struct disk *disk, disk_sector_t no, void *buffer, off_t start, size_t size)
+{
+    ASSERT(size <= DISK_SECTOR_SIZE);
+    ASSERT(start >= 0 && start <= DISK_SECTOR_SIZE);
+    struct disk_cache *cache = lookup_disk_cache(disk, no);
+    memcpy(buffer, cache->buffer + start, size);
+}
+
+static void
+disk_write_with_cache(struct disk *disk, disk_sector_t no, void *buffer, off_t start, size_t size)
+{
+    ASSERT(start + size <= DISK_SECTOR_SIZE);
+    ASSERT(start >= 0 && start <= DISK_SECTOR_SIZE);
+    struct disk_cache *cache = lookup_disk_cache(disk, no);
+    memcpy(cache->buffer + start, buffer, size);
+    cache->is_dirty = true;
+}
+#endif
