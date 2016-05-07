@@ -268,6 +268,7 @@ inode_create (disk_sector_t sector, off_t length, uint32_t type)
               return false;
           }
       }
+
       if(sectors >= DIRECT_NUM + DISK_ENTRY_NUM)
       {
           if(free_map_allocate(1, &disk_inode->DIblocks_sec))
@@ -288,8 +289,8 @@ inode_create (disk_sector_t sector, off_t length, uint32_t type)
 
               }
           }
-
       }
+
       success = extend_inode(disk_inode, iblocks, diblocks, sectors);
       disk_inode->length = length;
       if(diblocks)
@@ -560,7 +561,7 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size,
           off_t need_sectors = bytes_to_sectors(offset + size);
           struct inode_disk  *disk_inode = &inode->data;
           struct entry_block *iblocks = NULL;
-          struct entry_block *diblocks = NULL;
+          struct entry_block_ptrs *diblocks = NULL;
           if(need_sectors >= DIRECT_NUM)
           {
               if(disk_inode->Iblocks_sec == -1)
@@ -580,6 +581,37 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size,
                   iblocks = inode->iblock_ptr;
               }
           }
+
+          if(need_sectors >= DIRECT_NUM + DISK_ENTRY_NUM)
+          {
+              if(disk_inode->DIblocks_sec == -1 && free_map_allocate(1, &disk_inode->DIblocks_sec))
+              {
+                  diblocks = malloc(sizeof(struct entry_block_ptrs));
+                  memset(&diblocks->index, -1, sizeof(struct entry_block));
+                  memset(&diblocks->iblocks, 0, DISK_SECTOR_SIZE);
+                  inode->diblock_ptr = diblocks;
+              }
+              else
+              {
+                diblocks = inode->diblock_ptr;
+              }
+              size_t max_indirect_nums = (need_sectors - DIRECT_NUM - DISK_ENTRY_NUM) / DISK_ENTRY_NUM;
+              size_t i;
+              for(i = 0; i <= max_indirect_nums; i++)
+              {
+                  if(diblocks->index.no[i] != -1)
+                  {
+                      load_diblock(inode, i);
+                  }
+                  else if(free_map_allocate(1, &(diblocks->index.no[i])))
+                  {
+                      diblocks->iblocks[i] = malloc(DISK_SECTOR_SIZE);
+                      memset(diblocks->iblocks[i], -1, DISK_SECTOR_SIZE);
+                      disk_write_with_cache(filesys_disk, diblocks->index.no[i], diblocks->iblocks[i], 0, DISK_SECTOR_SIZE);
+                  }
+              }
+          }
+
           if(!extend_inode(disk_inode, iblocks, diblocks, need_sectors))
           {
               break;
@@ -588,6 +620,23 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size,
           {
               disk_inode->length = offset + size;
               inode_left = inode_length(inode) - offset;
+              if(diblocks)
+              {
+                  size_t i;
+                  for(i = 0; ; i++)
+                  {
+                      if(diblocks->index.no[i] != -1)
+                      {
+                          ASSERT(diblocks->iblocks[i] != NULL);
+                          disk_write_with_cache(filesys_disk, diblocks->index.no[i], diblocks->iblocks[i], 0, DISK_SECTOR_SIZE);
+                      }
+                      else
+                      {
+                          break;
+                      }
+                  }
+                  disk_write_with_cache(filesys_disk, disk_inode->DIblocks_sec, diblocks, 0, DISK_SECTOR_SIZE);
+              }
               if(iblocks)
               {
                   disk_write_with_cache(filesys_disk, disk_inode->Iblocks_sec, iblocks, 0, DISK_SECTOR_SIZE);
