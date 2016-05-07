@@ -108,12 +108,9 @@ _remove(void *esp)
     const char *file_name = *(const char **)(esp + 4);
     if(file_name == NULL) return false;
     lock_acquire(&filesys_lock);
-    struct file *file = filesys_open(file_name);
-    if(file 
 #ifdef EFILESYS
-            && is_inode_dir(file_get_inode(file))
-#endif
-            )
+    struct file *file = filesys_open(file_name);
+    if(file && is_inode_dir(file_get_inode(file)))
     {
         struct list *fd_list = &thread_current()->fd_list;
         struct list_elem *e;
@@ -130,6 +127,7 @@ _remove(void *esp)
     }
     if(file)
         file_close(file);
+#endif
     return filesys_remove(file_name);
 }
 
