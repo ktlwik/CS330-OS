@@ -20,6 +20,9 @@
 #include "threads/vaddr.h"
 #include "userprog/pagedir.h"
 #endif
+#ifdef EFILESYS
+#include "filesys/inode.h"
+#endif
 typedef int pid_t;
 
 static void syscall_handler (struct intr_frame *);
@@ -105,6 +108,28 @@ _remove(void *esp)
     const char *file_name = *(const char **)(esp + 4);
     if(file_name == NULL) return false;
     lock_acquire(&filesys_lock);
+    struct file *file = filesys_open(file_name);
+    if(file 
+#ifdef EFILESYS
+            && is_inode_dir(file_get_inode(file))
+#endif
+            )
+    {
+        struct list *fd_list = &thread_current()->fd_list;
+        struct list_elem *e;
+        struct fd_wrap *wrapper;
+        for(e = list_begin(fd_list); e != list_end(fd_list); e = list_next(e))
+        {
+            wrapper = list_entry(e, struct fd_wrap, elem);
+            if(file_get_inode(wrapper->file) == file_get_inode(file))
+            {
+                file_close(file);
+                return false;
+            }
+        }
+    }
+    if(file)
+        file_close(file);
     return filesys_remove(file_name);
 }
 
@@ -164,6 +189,7 @@ _open(void *esp)
         thread_exit();
     }
     lock_acquire(&filesys_lock);
+    if(!strcmp(file_name, "")) return -1;
     file = filesys_open(file_name);
     if(file == NULL)
     {
@@ -178,6 +204,9 @@ _open(void *esp)
     }
     wrapper->file = file;
     wrapper->fd = allocate_fd();
+#ifdef EFILESYS
+    wrapper->dir = is_inode_dir(file_get_inode(file)) ? dir_open(file_get_inode(file)) : NULL;
+#endif
     list_insert_ordered(&t->fd_list, &wrapper->elem, fd_sort, NULL);
     return wrapper->fd;
 }
@@ -192,6 +221,10 @@ _close(void *esp)
     if(fd_wrapper)
     {
         file_close(fd_wrapper->file);
+#ifdef EFILESYS
+        if(fd_wrapper->dir)
+            free(fd_wrapper->dir);
+#endif
         list_remove(&fd_wrapper->elem);
         free(fd_wrapper);
     }
@@ -267,6 +300,9 @@ _write(void *esp)
         fd_wrapper = get_fd_wrapper_by_fd(fd);
         if(fd_wrapper != NULL)
         {
+#ifdef EFILESYS
+            if(is_inode_dir(file_get_inode(fd_wrapper->file))) return -1;
+#endif
             lock_acquire(&filesys_lock);
             ret = file_write(fd_wrapper->file, buffer, len);
         }
@@ -449,6 +485,94 @@ _unmap(void *esp)
     }
 }
 #endif
+#ifdef EFILESYS
+static bool
+_chdir(void *esp)
+{
+    const char *dir = *(const char **)(esp + 4);
+    struct dir *start = NULL;
+    if(dir == NULL) return false;
+    // create inode for directory
+
+    if(dir[0] == '/')
+    {
+        dir ++;
+        start = dir_open_root();
+    }
+    else
+    {
+        start = dir_reopen(thread_current()->CWD);
+    }
+    char *_dir = malloc(strlen(dir) + 1);
+    strlcpy(_dir, dir, strlen(dir) + 1);
+    bool success = dir_change(_dir, start);
+    free(_dir);
+    dir_close(start);
+    return success;
+}
+
+static bool
+_mkdir(void *esp)
+{
+    const char *dir = *(const char **)(esp + 4);
+    struct dir *start = NULL;
+    if(dir == NULL) return false;
+    // create inode for directory
+
+    if(dir[0] == '/')
+    {
+        dir ++;
+        start = dir_open_root();
+    }
+    else
+    {
+        start = dir_reopen(thread_current()->CWD);
+    }
+    char *_dir = malloc(strlen(dir) + 1);
+    strlcpy(_dir, dir, strlen(dir) + 1);
+    bool success = dir_make(_dir, start);
+    free(_dir);
+    dir_close(start);
+    return success;
+}
+
+static bool
+_readdir(void *esp)
+{
+    int fd = *(int *)(esp + 4);
+    char *name = *(char **)(esp + 8);
+    struct fd_wrap *fd_wrapper;
+    struct file *file;
+    lock_acquire(&filesys_lock);
+    fd_wrapper = get_fd_wrapper_by_fd(fd);
+    bool success = fd_wrapper != NULL && fd_wrapper->dir != NULL && dir_readdir(fd_wrapper->dir, name);
+    return success;
+}
+
+static bool
+_is_dir(void *esp)
+{
+    int fd = *(int *)(esp + 4);
+    struct fd_wrap *fd_wrapper;
+    struct file *file;
+    lock_acquire(&filesys_lock);
+    fd_wrapper = get_fd_wrapper_by_fd(fd);
+    return fd_wrapper != NULL && fd_wrapper->dir != NULL;
+}
+
+static int
+_inumber(void *esp)
+{
+    int fd = *(int *)(esp + 4);
+    struct fd_wrap *fd_wrapper;
+    struct file *file;
+    lock_acquire(&filesys_lock);
+    fd_wrapper = get_fd_wrapper_by_fd(fd);
+    if(fd_wrapper == NULL) return -1;
+    file = fd_wrapper->file;
+    return inode_get_inumber(file_get_inode(file));
+}
+#endif
 static void
 syscall_handler (struct intr_frame *f UNUSED) 
 {
@@ -523,10 +647,25 @@ syscall_handler (struct intr_frame *f UNUSED)
 #endif
 #ifdef EFILESYS
     case SYS_CHDIR:
+        check_args(f->esp, 2);
+        f->eax = _chdir(f->esp);
+        break;
     case SYS_MKDIR:
+        check_args(f->esp, 2);
+        f->eax = _mkdir(f->esp);
+        break;
     case SYS_READDIR:
+        check_args(f->esp, 3);
+        f->eax = _readdir(f->esp);
+        break;
     case SYS_ISDIR:
+        check_args(f->esp, 2);
+        f->eax = _is_dir(f->esp);
+        break;
     case SYS_INUMBER:
+        check_args(f->esp, 2);
+        f->eax = _inumber(f->esp);
+        break;
 #endif
     default:
         PANIC("NOT HANDLED");

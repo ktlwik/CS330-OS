@@ -72,7 +72,12 @@ void
 free_map_create (void) 
 {
   /* Create inode. */
-  if (!inode_create (FREE_MAP_SECTOR, bitmap_file_size (free_map)))
+#ifdef EFILESYS
+  bool success = inode_create(FREE_MAP_SECTOR, bitmap_file_size (free_map), INODE_FILE);
+#else
+  bool success = inode_create(FREE_MAP_SECTOR, bitmap_file_size (free_map));
+#endif
+  if (!success)
     PANIC ("free map creation failed");
 
   /* Write bitmap to file. */

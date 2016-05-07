@@ -101,6 +101,12 @@ start_process (void *args)
      arguments on the stack in the form of a `struct intr_frame',
      we just point the stack pointer (%esp) to our stack frame
      and jump to it. */
+#ifdef EFILESYS
+  if(thread_current()->CWD == NULL)
+  {
+      thread_current()->CWD = dir_open_root();
+  }
+#endif
   sema_up(start_sema);
   asm volatile ("movl %0, %%esp; jmp intr_exit" : : "g" (&if_) : "memory");
   NOT_REACHED ();

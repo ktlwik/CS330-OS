@@ -6,7 +6,9 @@
 #include <hash.h>
 #include <stdint.h>
 #include "threads/synch.h"
-
+#ifdef EFILESYS
+#include "filesys/directory.h"
+#endif
 struct lock process_execute_lock;
 /* States in a thread's life cycle. */
 enum thread_status
@@ -86,6 +88,9 @@ typedef int tid_t;
 struct fd_wrap
 {
     struct file *file;
+#ifdef EFILESYS
+    struct dir *dir;
+#endif
     int fd;
     struct list_elem elem;
 };
@@ -125,6 +130,9 @@ struct thread
 #ifdef VM
     struct hash SPT;
     struct list mmap_list;
+#endif
+#ifdef EFILESYS
+    struct dir *CWD;
 #endif
     void *syscall_esp;
     bool is_syscall;

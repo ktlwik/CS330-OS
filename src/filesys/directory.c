@@ -5,6 +5,9 @@
 #include "filesys/filesys.h"
 #include "filesys/inode.h"
 #include "threads/malloc.h"
+#ifdef EFILESYS
+#include "threads/thread.h"
+#endif
 
 /* A directory. */
 struct dir 
@@ -20,22 +23,116 @@ struct dir_entry
     char name[NAME_MAX + 1];            /* Null terminated file name. */
     bool in_use;                        /* In use or free? */
   };
-
 /* Creates a directory with space for ENTRY_CNT entries in the
    given SECTOR.  Returns true if successful, false on failure. */
+#ifdef EFILESYS
+bool
+dir_create (disk_sector_t sector, size_t entry_cnt, disk_sector_t parent_sector) 
+{
+  if(inode_create (sector, entry_cnt * sizeof (struct dir_entry), INODE_DIR))
+  {
+      struct dir * dir = dir_open(inode_open(sector));
+      dir_add(dir, ".", sector);
+      dir_add(dir, "..", parent_sector);
+      dir_close(dir);
+      return true;
+  }
+  return false;
+}
+#else
 bool
 dir_create (disk_sector_t sector, size_t entry_cnt) 
 {
   return inode_create (sector, entry_cnt * sizeof (struct dir_entry));
 }
+#endif
 
+
+#ifdef EFILESYS
+bool
+resolve_dir_path(char *path, struct dir *cwd, char **name, struct dir **dir)
+{
+    char *ptr = path;
+
+    while(*ptr != 0 && *ptr != '/')
+    {
+        ptr ++;
+    }
+
+    if(*ptr == 0)
+    {
+        *dir = cwd;
+        *name = path;
+        return true;
+    }
+    else
+    {
+        *ptr = 0;
+        struct inode *inode = NULL;
+        struct dir *new_dir = NULL;
+        if(dir_lookup(cwd, path, &inode))
+        {
+            new_dir = dir_open(inode);
+        }
+        else
+        {
+            return false;
+        }
+        bool success = resolve_dir_path(ptr + 1, new_dir, name, dir);
+        if(*dir != new_dir)
+            dir_close(new_dir);
+        return true;
+    }
+}
+
+bool
+dir_make(char *dir, struct dir *start)
+{
+    struct dir *tail_dir = NULL;
+    char *file_name = NULL;
+    disk_sector_t inode_sector = 0;
+
+    bool success = resolve_dir_path(dir, start, &file_name, &tail_dir)
+        && free_map_allocate(1, &inode_sector)
+        && dir_create(inode_sector, 0, inode_get_inumber(dir_get_inode(tail_dir)))
+        && dir_add(tail_dir, file_name, inode_sector);
+    return success;
+}
+bool
+dir_change(char *dir, struct dir *start)
+{
+    struct dir *tail_dir = NULL;
+    char *file_name = NULL;
+    struct inode *inode = NULL;
+    bool success = resolve_dir_path(dir, start, &file_name, &tail_dir) && dir_lookup (tail_dir, file_name, &inode);
+    if(success)
+    {
+        if(is_inode_dir(inode))
+        {
+            dir_close(thread_current()->CWD);
+            thread_current()->CWD = dir_open(inode);
+        }
+        else
+        {
+            printf("FUCK\n");
+            inode_close(inode);
+            success = false;
+        }
+    }
+    return success;
+}
+#endif
 /* Opens and returns the directory for the given INODE, of which
    it takes ownership.  Returns a null pointer on failure. */
 struct dir *
 dir_open (struct inode *inode) 
 {
   struct dir *dir = calloc (1, sizeof *dir);
-  if (inode != NULL && dir != NULL)
+  if (inode != NULL && dir != NULL 
+#ifdef EFILESYS
+          && is_inode_dir(inode)
+#endif
+    )
     {
       dir->inode = inode;
       dir->pos = 0;
@@ -54,7 +151,7 @@ dir_open (struct inode *inode)
 struct dir *
 dir_open_root (void)
 {
-  return dir_open (inode_open (ROOT_DIR_SECTOR));
+  struct dir *dir= dir_open (inode_open (ROOT_DIR_SECTOR));
 }
 
 /* Opens and returns a new directory for the same inode as DIR.
@@ -124,7 +221,11 @@ dir_lookup (const struct dir *dir, const char *name,
   ASSERT (dir != NULL);
   ASSERT (name != NULL);
 
-  if (lookup (dir, name, &e, NULL))
+  if(!strcmp(name, ""))
+  {
+      *inode = dir->inode;
+  }
+  else if (lookup (dir, name, &e, NULL))
     *inode = inode_open (e.inode_sector);
   else
     *inode = NULL;
@@ -226,7 +327,7 @@ dir_readdir (struct dir *dir, char name[NAME_MAX + 1])
   while (inode_read_at (dir->inode, &e, sizeof e, dir->pos) == sizeof e) 
     {
       dir->pos += sizeof e;
-      if (e.in_use)
+      if (e.in_use && strcmp(e.name, ".") && strcmp(e.name, ".."))
         {
           strlcpy (name, e.name, NAME_MAX + 1);
           return true;
