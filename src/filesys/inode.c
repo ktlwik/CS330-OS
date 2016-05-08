@@ -128,7 +128,7 @@ byte_to_sector (const struct inode *inode, off_t pos)
   if (pos < inode->data.length)
     return inode->data.start + pos / DISK_SECTOR_SIZE;
   else
-    return NOT_EXIST_SEC;
+    return -1;
 #else
   off_t rtn = -1;
   if(pos < inode->data.length)
