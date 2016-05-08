@@ -10,6 +10,7 @@
 #ifdef EFILESYS
 #include "threads/thread.h"
 #include "filesys/directory.h"
+#include "threads/malloc.h"
 #endif
 /* The disk that contains the file system. */
 struct disk *filesys_disk;
@@ -64,7 +65,7 @@ filesys_create (const char *name, off_t initial_size)
   char *real_name = NULL;
   struct dir *start;
 
-  char *start_of_path;
+  const char *start_of_path;
   if(thread_current()->CWD == NULL)
   {
       thread_current()->CWD = dir_open_root();
@@ -84,7 +85,7 @@ filesys_create (const char *name, off_t initial_size)
   resolve_dir_path(path_dup, start, &real_name, &dir);
 #else
   struct dir *dir = dir_open_root ();
-  char *real_name = name;
+  const char *real_name = name;
 #endif
   bool success = (dir != NULL
                   && free_map_allocate (1, &inode_sector)
@@ -118,7 +119,7 @@ filesys_open (const char *name)
   char *real_name = NULL;
   struct dir *start;
 
-  char *start_of_path;
+  const char *start_of_path;
   if(thread_current()->CWD == NULL)
   {
       thread_current()->CWD = dir_open_root();
@@ -138,7 +139,7 @@ filesys_open (const char *name)
   resolve_dir_path(path_dup, start, &real_name, &dir);
 #else
   struct dir *dir = dir_open_root ();
-  char *real_name = name;
+  const char *real_name = name;
 #endif
   if (dir != NULL)
     dir_lookup (dir, real_name, &inode);
@@ -161,7 +162,7 @@ filesys_remove (const char *name)
   char *real_name = NULL;
   struct dir *start;
 
-  char *start_of_path;
+  const char *start_of_path;
   if(thread_current()->CWD == NULL)
   {
       thread_current()->CWD = dir_open_root();
@@ -181,11 +182,11 @@ filesys_remove (const char *name)
   resolve_dir_path(path_dup, start, &real_name, &dir);
 #else
   struct dir *dir = dir_open_root ();
-  char *real_name = name;
+  const char *real_name = name;
 #endif
   bool success = true;
-  struct inode *inode = NULL;
 #ifdef EFILESYS
+  struct inode *inode = NULL;
   if(dir_lookup(dir, real_name, &inode))
   {
       if(is_inode_dir(inode))
@@ -193,7 +194,7 @@ filesys_remove (const char *name)
           struct dir *try_rm;
           disk_sector_t rm_target_sec = inode_get_inumber(inode);
           inode_close(inode);
-          inode = inode_reopen(file_get_inode(thread_current()->CWD));
+          inode = inode_reopen(dir_get_inode(thread_current()->CWD));
           while(inode && inode_get_inumber(inode) != ROOT_DIR_SECTOR)
           {
               if(rm_target_sec == inode_get_inumber(inode))

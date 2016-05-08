@@ -156,7 +156,6 @@ process_exit (void)
   struct thread *curr = thread_current ();
   uint32_t *pd;
   struct fd_wrap *wrapper;
-  struct mmap_wrap *mwrapper;
 
   if(!lock_held_by_current_thread(&filesys_lock))
       lock_acquire(&filesys_lock);
@@ -168,6 +167,7 @@ process_exit (void)
       free(wrapper);
   }
 #ifdef VM
+  struct mmap_wrap *mwrapper;
   while(!list_empty(&curr->mmap_list))
   {
       mwrapper = list_entry(list_pop_front(&curr->mmap_list), struct mmap_wrap, elem);

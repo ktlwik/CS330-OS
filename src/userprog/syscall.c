@@ -540,7 +540,6 @@ _readdir(void *esp)
     int fd = *(int *)(esp + 4);
     char *name = *(char **)(esp + 8);
     struct fd_wrap *fd_wrapper;
-    struct file *file;
     lock_acquire(&filesys_lock);
     fd_wrapper = get_fd_wrapper_by_fd(fd);
     bool success = fd_wrapper != NULL && fd_wrapper->dir != NULL && dir_readdir(fd_wrapper->dir, name);
@@ -552,7 +551,6 @@ _is_dir(void *esp)
 {
     int fd = *(int *)(esp + 4);
     struct fd_wrap *fd_wrapper;
-    struct file *file;
     lock_acquire(&filesys_lock);
     fd_wrapper = get_fd_wrapper_by_fd(fd);
     return fd_wrapper != NULL && fd_wrapper->dir != NULL;

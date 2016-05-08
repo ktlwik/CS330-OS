@@ -31,6 +31,7 @@ bool dir_create (disk_sector_t, size_t, disk_sector_t);
 bool resolve_dir_path(char *, struct dir *, char **, struct dir **);
 bool dir_make(char *, struct dir *);
 bool dir_change(char *, struct dir *);
+bool is_inode_dir(const struct inode *);
 #else
 bool dir_create (disk_sector_t, size_t);
 #endif

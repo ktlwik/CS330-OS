@@ -16,6 +16,7 @@
 #ifdef EFILESYS
 #define DISK_ENTRY_NUM ((size_t)(DISK_SECTOR_SIZE / sizeof(disk_sector_t)))
 #define DIRECT_NUM ((size_t)123)
+#define NOT_EXIST_SEC ((disk_sector_t) -1)
 struct entry_block
 {
     disk_sector_t no[DISK_ENTRY_NUM];
@@ -114,7 +115,7 @@ load_diblock(struct inode *inode, size_t di_no)
         disk_read_with_cache(filesys_disk, inode->data.DIblocks_sec, &(inode->diblock_ptr->index), 0, DISK_SECTOR_SIZE);
         memset(&inode->diblock_ptr->iblocks, 0, DISK_SECTOR_SIZE);
     }
-    ASSERT(inode->diblock_ptr->index.no[di_no] != -1);
+    ASSERT(inode->diblock_ptr->index.no[di_no] != NOT_EXIST_SEC);
     inode->diblock_ptr->iblocks[di_no] = malloc(DISK_SECTOR_SIZE);
     disk_read_with_cache(filesys_disk, inode->diblock_ptr->index.no[di_no], inode->diblock_ptr->iblocks[di_no], 0, DISK_SECTOR_SIZE);
 }
@@ -127,12 +128,12 @@ byte_to_sector (const struct inode *inode, off_t pos)
   if (pos < inode->data.length)
     return inode->data.start + pos / DISK_SECTOR_SIZE;
   else
-    return -1;
+    return NOT_EXIST_SEC;
 #else
   off_t rtn = -1;
   if(pos < inode->data.length)
   {
-      off_t idx = pos / DISK_SECTOR_SIZE;
+      disk_sector_t idx = pos / DISK_SECTOR_SIZE;
       if(idx < DIRECT_NUM)
           rtn = inode->data.disk_sec[idx];
       else if (idx >= DIRECT_NUM && idx < DIRECT_NUM + DISK_ENTRY_NUM)
@@ -180,14 +181,14 @@ extend_inode(struct inode_disk *disk_inode, struct entry_block *iblocks, struct 
         else if(i >= DIRECT_NUM && i < DIRECT_NUM + DISK_ENTRY_NUM)
         {
             ASSERT(iblocks != NULL); 
-            ASSERT(disk_inode->Iblocks_sec != -1);
+            ASSERT(disk_inode->Iblocks_sec != NOT_EXIST_SEC);
             target = &iblocks->no[i - DIRECT_NUM];
         }
         // doubly indirect block
         else if(i >= DIRECT_NUM + DISK_ENTRY_NUM && i < DIRECT_NUM + DISK_ENTRY_NUM + DISK_ENTRY_NUM * DISK_ENTRY_NUM)
         {
             ASSERT(diblocks != NULL);
-            ASSERT(disk_inode->DIblocks_sec != -1);
+            ASSERT(disk_inode->DIblocks_sec != NOT_EXIST_SEC);
             size_t current_sector = i - DIRECT_NUM - DISK_ENTRY_NUM;
             size_t di_no = current_sector / DISK_ENTRY_NUM;
             size_t i_no = current_sector % DISK_ENTRY_NUM;
@@ -298,7 +299,7 @@ inode_create (disk_sector_t sector, off_t length, uint32_t type)
           size_t i;
           for(i = 0; ; i++)
           {
-              if(diblocks->index.no[i] != -1)
+              if(diblocks->index.no[i] != NOT_EXIST_SEC)
               {
                   ASSERT(diblocks->iblocks[i] != NULL);
                   disk_write_with_cache(filesys_disk, diblocks->index.no[i], diblocks->iblocks[i], 0, DISK_SECTOR_SIZE);
@@ -437,11 +438,26 @@ inode_close (struct inode *inode)
     {
       /* Remove from inode list and release lock. */
       list_remove (&inode->elem);
+       /* Deallocate blocks if removed. */
+      if (inode->removed) 
+        {
+          free_map_release (inode->sector, 1);
+#ifdef EFILESYS
+          off_t i;
+          for(i = 0; i < inode->data.length; i += DISK_SECTOR_SIZE)
+          {
+              free_map_release(byte_to_sector(inode, i), 1);
+          }
+#else
+          free_map_release (inode->data.start,
+                            bytes_to_sectors (inode->data.length)); 
+#endif
+        }
 #ifdef EFILESYS
       if(inode->iblock_ptr) free(inode->iblock_ptr);
       if(inode->diblock_ptr)
       {
-          off_t i;
+          disk_sector_t i;
           for(i = 0; i < DISK_ENTRY_NUM; i++)
           {
               if(inode->diblock_ptr->iblocks[i])
@@ -450,16 +466,6 @@ inode_close (struct inode *inode)
           free(inode->diblock_ptr);
       }
 #endif
-       /* Deallocate blocks if removed. */
-      if (inode->removed) 
-        {
-          free_map_release (inode->sector, 1);
-#ifdef EFILESYS
-#else
-          free_map_release (inode->data.start,
-                            bytes_to_sectors (inode->data.length)); 
-#endif
-        }
       free (inode); 
     }
 }
@@ -558,13 +564,13 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size,
 #ifdef EFILESYS
       if(inode_left < size)
       {
-          off_t need_sectors = bytes_to_sectors(offset + size);
+          disk_sector_t need_sectors = bytes_to_sectors(offset + size);
           struct inode_disk  *disk_inode = &inode->data;
           struct entry_block *iblocks = NULL;
           struct entry_block_ptrs *diblocks = NULL;
           if(need_sectors >= DIRECT_NUM)
           {
-              if(disk_inode->Iblocks_sec == -1)
+              if(disk_inode->Iblocks_sec == NOT_EXIST_SEC)
               {
                   if(free_map_allocate(1, &disk_inode->Iblocks_sec))
                   {
@@ -584,7 +590,7 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size,
 
           if(need_sectors >= DIRECT_NUM + DISK_ENTRY_NUM)
           {
-              if(disk_inode->DIblocks_sec == -1 && free_map_allocate(1, &disk_inode->DIblocks_sec))
+              if(disk_inode->DIblocks_sec == NOT_EXIST_SEC && free_map_allocate(1, &disk_inode->DIblocks_sec))
               {
                   diblocks = malloc(sizeof(struct entry_block_ptrs));
                   memset(&diblocks->index, -1, sizeof(struct entry_block));
@@ -599,7 +605,7 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size,
               size_t i;
               for(i = 0; i <= max_indirect_nums; i++)
               {
-                  if(diblocks->index.no[i] != -1)
+                  if(diblocks->index.no[i] != NOT_EXIST_SEC)
                   {
                       load_diblock(inode, i);
                   }
@@ -625,7 +631,7 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size,
                   size_t i;
                   for(i = 0; ; i++)
                   {
-                      if(diblocks->index.no[i] != -1)
+                      if(diblocks->index.no[i] != NOT_EXIST_SEC)
                       {
                           ASSERT(diblocks->iblocks[i] != NULL);
                           disk_write_with_cache(filesys_disk, diblocks->index.no[i], diblocks->iblocks[i], 0, DISK_SECTOR_SIZE);
