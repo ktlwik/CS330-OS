@@ -179,8 +179,8 @@ page_fault (struct intr_frame *f)
 
   if(success) return;
   // stack growth
-  void *esp = (f->esp < PHYS_BASE || thread_current()->is_syscall == false) ? f->esp : thread_current()->syscall_esp;
-  if((esp - 32) <= fault_addr)
+  void *esp = (f->esp < PHYS_BASE || t->is_syscall == false) ? f->esp : t->syscall_esp;
+  if((esp - 32) <= fault_addr && fault_addr > 0xbf000000)
   {
       if(!palloc_user_page((void *)((uint32_t)fault_addr & 0xfffff000), VM_STACK,  NULL)) thread_exit();
       else return;

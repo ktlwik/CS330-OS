@@ -7,6 +7,7 @@
 #include "threads/malloc.h"
 #ifdef EFILESYS
 #include "threads/thread.h"
+#include "filesys/free-map.h"
 #endif
 
 /* A directory. */
@@ -81,7 +82,7 @@ resolve_dir_path(char *path, struct dir *cwd, char **name, struct dir **dir)
         bool success = resolve_dir_path(ptr + 1, new_dir, name, dir);
         if(*dir != new_dir)
             dir_close(new_dir);
-        return true;
+        return success;
     }
 }
 
@@ -152,6 +153,7 @@ struct dir *
 dir_open_root (void)
 {
   struct dir *dir= dir_open (inode_open (ROOT_DIR_SECTOR));
+  return dir;
 }
 
 /* Opens and returns a new directory for the same inode as DIR.

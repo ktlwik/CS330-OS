@@ -97,7 +97,7 @@ _create(void *esp)
 {
     const char *file_name = *(const char **)(esp + 4);
     unsigned initial_size = *(unsigned *)(esp + 8);
-    if(file_name == NULL) thread_exit();
+    if(file_name == NULL || !strcmp(file_name, "")) thread_exit();
     lock_acquire(&filesys_lock);
     return filesys_create(file_name, initial_size);
 }
@@ -186,8 +186,11 @@ _open(void *esp)
     {
         thread_exit();
     }
+    if(!strcmp(file_name, ""))
+    {
+        return -1;
+    }
     lock_acquire(&filesys_lock);
-    if(!strcmp(file_name, "")) return -1;
     file = filesys_open(file_name);
     if(file == NULL)
     {
