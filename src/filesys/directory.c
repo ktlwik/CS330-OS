@@ -115,7 +115,6 @@ dir_change(char *dir, struct dir *start)
         }
         else
         {
-            printf("FUCK\n");
             inode_close(inode);
             success = false;
         }
